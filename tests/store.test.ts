@@ -5,6 +5,7 @@ import {
   createEmptyStore,
   loadStore,
   saveStore,
+  setActiveTemplate,
   type TemplateStore,
 } from "../src/store.js"
 
@@ -59,5 +60,38 @@ describe("template store", () => {
 
     await expect(saveStore(path, { version: 1 } as never)).rejects.toThrow("Invalid MCP template store")
     expect(await loadStore(path)).toEqual(store)
+  })
+
+  test("round trips activeTemplate", async () => {
+    const path = await temporaryStorePath()
+    const store: TemplateStore = {
+      version: 1,
+      defaultTemplate: "default",
+      templates: { default: { mcp: { docs: true } }, work: { mcp: { docs: false } } },
+    }
+    await saveStore(path, store)
+
+    await setActiveTemplate(path, "work")
+    const updated = await loadStore(path)
+    expect(updated.activeTemplate).toBe("work")
+
+    await setActiveTemplate(path, undefined)
+    const cleared = await loadStore(path)
+    expect(cleared.activeTemplate).toBeUndefined()
+  })
+
+  test("rejects setActiveTemplate for missing template", async () => {
+    const path = await temporaryStorePath()
+    await saveStore(path, createEmptyStore())
+
+    await expect(setActiveTemplate(path, "nope")).rejects.toThrow("Template not found")
+  })
+
+  test("rejects store with activeTemplate referencing missing template", async () => {
+    const path = await temporaryStorePath()
+    const broken = { version: 1, defaultTemplate: "default", activeTemplate: "ghost", templates: { default: { mcp: {} } } }
+    await writeFile(path, JSON.stringify(broken))
+
+    await expect(loadStore(path)).rejects.toThrow("Invalid MCP template store")
   })
 })

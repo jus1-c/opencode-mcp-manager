@@ -13,7 +13,8 @@ export function createServerPlugin(storePath = DEFAULT_STORE_PATH): Plugin {
         await saveStore(storePath, reconciled.store)
       }
 
-      const template = reconciled.store.templates[reconciled.store.defaultTemplate]
+      const templateName = reconciled.store.activeTemplate ?? reconciled.store.defaultTemplate
+      const template = reconciled.store.templates[templateName]
       if (!template) throw new Error("Default MCP template is missing")
       applyTemplateToConfig(config, template)
     },

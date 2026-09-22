@@ -14,6 +14,7 @@ export type Template = {
 export type TemplateStore = {
   version: typeof STORE_VERSION
   defaultTemplate: string
+  activeTemplate?: string
   templates: Record<string, Template>
 }
 
@@ -59,9 +60,17 @@ export function validateStore(value: unknown): TemplateStore {
     templates[name] = { mcp }
   }
 
+  const activeTemplate = value.activeTemplate
+  if (activeTemplate !== undefined) {
+    if (typeof activeTemplate !== "string" || !activeTemplate || !isRecord(value.templates[activeTemplate])) {
+      throw invalidStore()
+    }
+  }
+
   return {
     version: STORE_VERSION,
     defaultTemplate: value.defaultTemplate,
+    ...(activeTemplate !== undefined ? { activeTemplate } : {}),
     templates,
   }
 }
@@ -95,6 +104,17 @@ export async function saveStore(path: string, store: unknown): Promise<void> {
   } finally {
     await rm(temporaryPath, { force: true })
   }
+}
+
+export async function setActiveTemplate(storePath: string, name: string | undefined): Promise<TemplateStore> {
+  const store = await loadStore(storePath)
+  if (name !== undefined && !store.templates[name]) {
+    throw new Error(`Template not found: ${name}`)
+  }
+  const { activeTemplate: _previous, ...rest } = store
+  const nextStore: TemplateStore = name !== undefined ? { ...rest, activeTemplate: name } : rest
+  await saveStore(storePath, nextStore)
+  return nextStore
 }
 
 function invalidStore(cause?: unknown): TemplateStoreError {

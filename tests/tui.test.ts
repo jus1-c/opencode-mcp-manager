@@ -2,13 +2,14 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { join } from "node:path"
 import {
+  applyNamedTemplate,
   createTuiPlugin,
   deleteTemplate,
   runtimeTemplateFromStatuses,
   saveCurrentTemplate,
   setDefaultTemplate,
 } from "../src/tui.js"
-import { createEmptyStore, loadStore } from "../src/store.js"
+import { createEmptyStore, loadStore, saveStore, setActiveTemplate, type TemplateStore } from "../src/store.js"
 
 const temporaryDirectories: string[] = []
 
@@ -82,5 +83,87 @@ describe("TUI template actions", () => {
     await deleteTemplate(path, "work")
 
     expect(await loadStore(path)).toEqual(createEmptyStore())
+  })
+
+  test("deleteTemplate clears activeTemplate when deleting the active template", async () => {
+    const path = await temporaryStorePath()
+    const store: TemplateStore = {
+      version: 1,
+      defaultTemplate: "default",
+      templates: { default: { mcp: {} }, work: { mcp: {} } },
+    }
+    await saveStore(path, store)
+    await setActiveTemplate(path, "work")
+    expect((await loadStore(path)).activeTemplate).toBe("work")
+
+    await deleteTemplate(path, "work")
+
+    const updated = await loadStore(path)
+    expect(updated.activeTemplate).toBeUndefined()
+    expect(updated.templates.work).toBeUndefined()
+  })
+
+  test("applyNamedTemplate sets activeTemplate and calls instance.dispose", async () => {
+    const path = await temporaryStorePath()
+    const store: TemplateStore = {
+      version: 1,
+      defaultTemplate: "default",
+      templates: { default: { mcp: {} }, work: { mcp: { docs: true } } },
+    }
+    await saveStore(path, store)
+    const disposed: unknown[] = []
+    const connected: string[] = []
+    const api = {
+      keymap: { registerLayer: () => () => undefined },
+      client: {
+        mcp: {
+          status: async () => ({ data: { docs: { status: "disabled" } }, error: undefined }),
+          connect: async (input: { name: string }) => { connected.push(input.name); return { data: true, error: undefined } },
+          disconnect: async () => ({ data: true, error: undefined }),
+        },
+        instance: {
+          dispose: async () => { disposed.push(true); return { data: true, error: undefined } },
+        },
+      },
+      state: { config: { mcp: { docs: {} } } },
+      ui: { dialog: { replace: () => undefined, clear: () => undefined }, toast: () => undefined },
+    }
+
+    await applyNamedTemplate(api as never, path, "work")
+
+    expect((await loadStore(path)).activeTemplate).toBe("work")
+    expect(disposed.length).toBe(1)
+    expect(connected).toEqual(["docs"])
+  })
+
+  test("applyNamedTemplate does not set activeTemplate when runtime apply fails", async () => {
+    const path = await temporaryStorePath()
+    const store: TemplateStore = {
+      version: 1,
+      defaultTemplate: "default",
+      templates: { default: { mcp: {} }, work: { mcp: { docs: true } } },
+    }
+    await saveStore(path, store)
+    const disposed: unknown[] = []
+    const api = {
+      keymap: { registerLayer: () => () => undefined },
+      client: {
+        mcp: {
+          status: async () => ({ data: { docs: { status: "disabled" } }, error: undefined }),
+          connect: async () => ({ data: undefined, error: { type: "connection_timeout" } }),
+          disconnect: async () => ({ data: true, error: undefined }),
+        },
+        instance: {
+          dispose: async () => { disposed.push(true); return { data: true, error: undefined } },
+        },
+      },
+      state: { config: { mcp: { docs: {} } } },
+      ui: { dialog: { replace: () => undefined, clear: () => undefined }, toast: () => undefined },
+    }
+
+    await applyNamedTemplate(api as never, path, "work")
+
+    expect((await loadStore(path)).activeTemplate).toBeUndefined()
+    expect(disposed.length).toBe(0)
   })
 })

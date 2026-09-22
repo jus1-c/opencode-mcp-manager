@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import type { Config } from "@opencode-ai/plugin"
-import { loadStore } from "../src/store.js"
+import { loadStore, saveStore, setActiveTemplate, type TemplateStore } from "../src/store.js"
 import { createServerPlugin } from "../src/server.js"
 
 const temporaryDirectories: string[] = []
@@ -49,5 +49,56 @@ describe("server plugin", () => {
     await expect(hooks.config?.(config)).rejects.toThrow("Invalid MCP template store")
     expect(config.mcp?.docs).toEqual({ type: "remote", url: "https://docs.test" })
     expect(await readFile(storePath, "utf8")).toBe(contents)
+  })
+
+  test("applies activeTemplate over defaultTemplate", async () => {
+    const storePath = await temporaryStorePath()
+    const store: TemplateStore = {
+      version: 1,
+      defaultTemplate: "default",
+      templates: {
+        default: { mcp: { docs: true, browser: true } },
+        minimal: { mcp: { docs: false, browser: true } },
+      },
+    }
+    await saveStore(storePath, store)
+    await setActiveTemplate(storePath, "minimal")
+    const hooks = await createServerPlugin(storePath)({} as never)
+    const config: Config = {
+      mcp: {
+        docs: { type: "remote", url: "https://docs.test" },
+        browser: { type: "local", command: ["browser"] },
+      },
+    }
+
+    await hooks.config?.(config)
+
+    expect(config.mcp?.docs).toMatchObject({ enabled: false })
+    expect(config.mcp?.browser).toMatchObject({ enabled: true })
+  })
+
+  test("falls back to defaultTemplate when activeTemplate cleared", async () => {
+    const storePath = await temporaryStorePath()
+    const store: TemplateStore = {
+      version: 1,
+      defaultTemplate: "default",
+      templates: {
+        default: { mcp: { docs: true } },
+        minimal: { mcp: { docs: false } },
+      },
+    }
+    await saveStore(storePath, store)
+    await setActiveTemplate(storePath, "minimal")
+    await setActiveTemplate(storePath, undefined)
+    const hooks = await createServerPlugin(storePath)({} as never)
+    const config: Config = {
+      mcp: {
+        docs: { type: "remote", url: "https://docs.test" },
+      },
+    }
+
+    await hooks.config?.(config)
+
+    expect(config.mcp?.docs).toMatchObject({ enabled: true })
   })
 })

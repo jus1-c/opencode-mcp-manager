@@ -8,6 +8,7 @@ import {
   DEFAULT_STORE_PATH,
   loadStore,
   saveStore,
+  setActiveTemplate,
   type Template,
   type TemplateStore,
 } from "./store.js"
@@ -63,7 +64,14 @@ export async function deleteTemplate(storePath: string, name: string): Promise<T
   if (!store.templates[name]) throw new Error(`Template not found: ${name}`)
 
   const { [name]: _deleted, ...templates } = store.templates
-  const nextStore = { ...store, templates }
+  const nextStore: TemplateStore = {
+    version: store.version,
+    defaultTemplate: store.defaultTemplate,
+    templates,
+    ...(store.activeTemplate !== name && store.activeTemplate !== undefined
+      ? { activeTemplate: store.activeTemplate }
+      : {}),
+  }
   await saveStore(storePath, nextStore)
   return nextStore
 }
@@ -201,7 +209,7 @@ function showDeleteMenu(api: TuiPluginApi, storePath: string, store: TemplateSto
   )
 }
 
-async function applyNamedTemplate(api: TuiPluginApi, storePath: string, name: string): Promise<void> {
+export async function applyNamedTemplate(api: TuiPluginApi, storePath: string, name: string): Promise<void> {
   try {
     const store = await loadStore(storePath)
     const template = store.templates[name]
@@ -214,6 +222,17 @@ async function applyNamedTemplate(api: TuiPluginApi, storePath: string, name: st
         variant: "error",
         title: "MCP template partially applied",
         message: failures.map((failure) => `${failure.name}: ${failure.error}`).join("; "),
+      })
+      return
+    }
+
+    await setActiveTemplate(storePath, name)
+    const disposed = await api.client.instance.dispose()
+    if (disposed.error) {
+      api.ui.toast({
+        variant: "warning",
+        title: "MCP template applied",
+        message: `${name} — restart TUI to refresh`,
       })
       return
     }
