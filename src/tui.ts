@@ -235,7 +235,7 @@ async function showStatusDialog(api: TuiPluginApi): Promise<void> {
   }
 }
 
-async function applyNamedTemplate(api: TuiPluginApi, storePath: string, name: string): Promise<void> {
+export async function applyNamedTemplate(api: TuiPluginApi, storePath: string, name: string): Promise<void> {
   try {
     const store = await loadStore(storePath)
     const template = store.templates[name]
@@ -243,6 +243,7 @@ async function applyNamedTemplate(api: TuiPluginApi, storePath: string, name: st
 
     const results = await applyTemplateToRuntime(api.client, await fetchStatuses(api), template)
     const failures = results.filter((result) => !result.ok)
+    await showStatusDialog(api)
     if (failures.length) {
       api.ui.toast({
         variant: "error",

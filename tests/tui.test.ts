@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { join } from "node:path"
 import {
+  applyNamedTemplate,
   createTuiPlugin,
   deleteTemplate,
   runtimeTemplateFromStatuses,
@@ -54,6 +55,34 @@ describe("TUI template actions", () => {
     await setDefaultTemplate(path, "work")
     expect((await loadStore(path)).defaultTemplate).toBe("work")
     await expect(deleteTemplate(path, "work")).rejects.toThrow("Cannot delete default template")
+  })
+
+  test("shows live status dialog after applying a template", async () => {
+    const replaced: string[] = []
+    const storePath = await temporaryStorePath()
+    await saveCurrentTemplate(storePath, "work", ["docs"], { docs: { status: "disabled" } })
+    const api = {
+      keymap: { registerLayer: () => () => undefined },
+      client: {
+        mcp: {
+          status: async () => ({ data: { docs: { status: "disabled" } } }),
+          connect: async () => ({ data: true, error: undefined }),
+          disconnect: async () => ({ data: true, error: undefined }),
+        },
+      },
+      state: { config: { mcp: { docs: {} } } },
+      ui: {
+        dialog: {
+          replace: (render: () => unknown) => replaced.push(String(render)),
+          clear: () => undefined,
+        },
+        toast: () => undefined,
+      },
+    }
+
+    await applyNamedTemplate(api as never, storePath, "work")
+
+    expect(replaced.length).toBe(1)
   })
 
   test("lists live status sorted by name with errors in description", () => {
