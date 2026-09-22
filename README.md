@@ -18,6 +18,7 @@ Restart OpenCode after installation. Run `/mcp-man` to open the manager.
 
 - Apply saved MCP templates at startup through the server plugin config hook.
 - Connect and disconnect MCP servers at runtime from the native TUI.
+- Show live MCP status straight from the server (`/mcp-man` → "Show current status").
 - Save current static MCP state under a named template.
 - Change or delete non-default templates.
 - Keep MCP connection configuration in OpenCode config; templates store only enabled state.
@@ -47,7 +48,7 @@ Dynamic MCP servers added at runtime are not saved because templates do not cont
 
 ## Known limitation
 
-The built-in `/mcps` dialog and the sidebar read OpenCode's TUI sync snapshot, which only refreshes at startup or after a built-in `/mcps` toggle. Applying a template here changes the real server state immediately (verify with `opencode mcp list`), but those views can stay stale until restart. The `/mcp-man` menu always fetches live status directly.
+The built-in `/mcps` dialog and the sidebar read OpenCode's TUI sync snapshot. That snapshot fills at bootstrap and only the built-in dialog itself refreshes it (after its own toggle) — plugin APIs in 1.18.32 are a whitelist without a sync writer, and upstream has no `mcp.tools.changed` handler yet. Applying a template here changes the real server state immediately; verify via `/mcp-man` → "Show current status (live)" or `opencode mcp list`. Restart the TUI to make `/mcps` and the sidebar truthful again.
 
 ## Development
 

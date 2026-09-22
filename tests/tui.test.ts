@@ -7,6 +7,7 @@ import {
   runtimeTemplateFromStatuses,
   saveCurrentTemplate,
   setDefaultTemplate,
+  statusOptions,
 } from "../src/tui.js"
 import { createEmptyStore, loadStore } from "../src/store.js"
 
@@ -53,6 +54,18 @@ describe("TUI template actions", () => {
     await setDefaultTemplate(path, "work")
     expect((await loadStore(path)).defaultTemplate).toBe("work")
     await expect(deleteTemplate(path, "work")).rejects.toThrow("Cannot delete default template")
+  })
+
+  test("lists live status sorted by name with errors in description", () => {
+    const options = statusOptions({
+      browser: { status: "failed", error: "offline" },
+      codegraph: { status: "connected" },
+    })
+
+    expect(options).toEqual([
+      { title: "browser", description: "failed: offline" },
+      { title: "codegraph", description: "connected" },
+    ])
   })
 
   test("registers native slash command", async () => {

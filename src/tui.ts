@@ -68,6 +68,15 @@ export async function deleteTemplate(storePath: string, name: string): Promise<T
   return nextStore
 }
 
+export function statusOptions(statuses: RuntimeStatusMap): Array<{ title: string; description: string }> {
+  return Object.entries(statuses)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, status]) => ({
+      title: name,
+      description: status.error ? `${status.status}: ${status.error}` : status.status,
+    }))
+}
+
 export function createTuiPlugin(storePath = DEFAULT_STORE_PATH): TuiPlugin {
   return async (api) => {
     api.keymap.registerLayer({
@@ -108,6 +117,7 @@ async function prepareStore(api: TuiPluginApi, storePath: string): Promise<Templ
 function showMainMenu(api: TuiPluginApi, storePath: string, store: TemplateStore): void {
   type MainOption =
     | { kind: "apply"; name: string }
+    | { kind: "status" }
     | { kind: "save" }
     | { kind: "default" }
     | { kind: "delete" }
@@ -117,6 +127,7 @@ function showMainMenu(api: TuiPluginApi, storePath: string, store: TemplateStore
       title: `Apply ${name}${name === store.defaultTemplate ? " (default)" : ""}`,
       value: { kind: "apply", name } as const,
     })),
+    { title: "Show current status (live)", value: { kind: "status" } },
     { title: "Save current state", value: { kind: "save" } },
     { title: "Set default template", value: { kind: "default" } },
     { title: "Delete template", value: { kind: "delete" } },
@@ -131,6 +142,8 @@ function showMainMenu(api: TuiPluginApi, storePath: string, store: TemplateStore
         if (option.value.kind === "apply") {
           api.ui.dialog.clear()
           void applyNamedTemplate(api, storePath, option.value.name)
+        } else if (option.value.kind === "status") {
+          void showStatusDialog(api)
         } else if (option.value.kind === "save") {
           showSavePrompt(api, storePath)
         } else if (option.value.kind === "default") {
@@ -199,6 +212,27 @@ function showDeleteMenu(api: TuiPluginApi, storePath: string, store: TemplateSto
       },
     }),
   )
+}
+
+async function showStatusDialog(api: TuiPluginApi): Promise<void> {
+  try {
+    const statuses = await fetchStatuses(api)
+    api.ui.dialog.replace(() =>
+      api.ui.DialogSelect({
+        title: "MCP status (live)",
+        options: statusOptions(statuses).map((option) => ({
+          title: option.title,
+          description: option.description,
+          value: option.title,
+        })),
+        onSelect: () => {
+          api.ui.dialog.clear()
+        },
+      }),
+    )
+  } catch (error) {
+    showError(api, error)
+  }
 }
 
 async function applyNamedTemplate(api: TuiPluginApi, storePath: string, name: string): Promise<void> {
