@@ -1,0 +1,38 @@
+{
+  "name": "opencode-mcp-manager",
+  "version": "0.1.0",
+  "description": "Manage OpenCode MCP server templates from the native TUI",
+  "type": "module",
+  "main": "./dist/server.js",
+  "exports": {
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
+    },
+    "./tui": {
+      "types": "./dist/tui.d.ts",
+      "import": "./dist/tui.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "opencode": ">=1.18.32"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "1.18.32"
+  },
+  "devDependencies": {
+    "@opentui/core": "0.5.12",
+    "@opentui/keymap": "0.5.12",
+    "@opentui/solid": "0.5.12",
+    "@types/bun": "latest",
+    "typescript": "^5.8.2"
+  }
+}
