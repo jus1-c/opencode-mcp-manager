@@ -18,9 +18,11 @@ async function temporaryStorePath(): Promise<string> {
 }
 
 describe("server plugin", () => {
+  const projectDir = "/test-project"
+
   test("applies default template and persists new configured servers", async () => {
     const storePath = await temporaryStorePath()
-    const hooks = await createServerPlugin(storePath)({} as never)
+    const hooks = await createServerPlugin(storePath)({ directory: projectDir } as never)
     const config: Config = {
       mcp: {
         docs: { type: "remote", url: "https://docs.test" },
@@ -39,7 +41,7 @@ describe("server plugin", () => {
     const storePath = await temporaryStorePath()
     const contents = "{not-json"
     await writeFile(storePath, contents)
-    const hooks = await createServerPlugin(storePath)({} as never)
+    const hooks = await createServerPlugin(storePath)({ directory: projectDir } as never)
     const config: Config = {
       mcp: {
         docs: { type: "remote", url: "https://docs.test" },
@@ -51,7 +53,7 @@ describe("server plugin", () => {
     expect(await readFile(storePath, "utf8")).toBe(contents)
   })
 
-  test("applies activeTemplate over defaultTemplate", async () => {
+  test("applies activeTemplates[directory] over defaultTemplate", async () => {
     const storePath = await temporaryStorePath()
     const store: TemplateStore = {
       version: 1,
@@ -62,8 +64,8 @@ describe("server plugin", () => {
       },
     }
     await saveStore(storePath, store)
-    await setActiveTemplate(storePath, "minimal")
-    const hooks = await createServerPlugin(storePath)({} as never)
+    await setActiveTemplate(storePath, projectDir, "minimal")
+    const hooks = await createServerPlugin(storePath)({ directory: projectDir } as never)
     const config: Config = {
       mcp: {
         docs: { type: "remote", url: "https://docs.test" },
@@ -77,28 +79,31 @@ describe("server plugin", () => {
     expect(config.mcp?.browser).toMatchObject({ enabled: true })
   })
 
-  test("falls back to defaultTemplate when activeTemplate cleared", async () => {
+  test("different directories get different active templates", async () => {
     const storePath = await temporaryStorePath()
     const store: TemplateStore = {
       version: 1,
       defaultTemplate: "default",
       templates: {
-        default: { mcp: { docs: true } },
-        minimal: { mcp: { docs: false } },
+        default: { mcp: { docs: true, browser: true } },
+        minimal: { mcp: { docs: false, browser: true } },
       },
     }
     await saveStore(storePath, store)
-    await setActiveTemplate(storePath, "minimal")
-    await setActiveTemplate(storePath, undefined)
-    const hooks = await createServerPlugin(storePath)({} as never)
-    const config: Config = {
-      mcp: {
-        docs: { type: "remote", url: "https://docs.test" },
-      },
-    }
+    await setActiveTemplate(storePath, "/project-a", "minimal")
 
-    await hooks.config?.(config)
+    const makeConfig = (): Config => ({
+      mcp: { docs: { type: "remote", url: "" }, browser: { type: "local", command: [] } },
+    })
 
-    expect(config.mcp?.docs).toMatchObject({ enabled: true })
+    const hooksA = await createServerPlugin(storePath)({ directory: "/project-a" } as never)
+    const configA = makeConfig()
+    await hooksA.config?.(configA)
+    expect(configA.mcp?.docs).toMatchObject({ enabled: false })
+
+    const hooksB = await createServerPlugin(storePath)({ directory: "/project-b" } as never)
+    const configB = makeConfig()
+    await hooksB.config?.(configB)
+    expect(configB.mcp?.docs).toMatchObject({ enabled: true })
   })
 })

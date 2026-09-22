@@ -71,25 +71,53 @@ describe("template store", () => {
     }
     await saveStore(path, store)
 
-    await setActiveTemplate(path, "work")
+    await setActiveTemplate(path, "/project-a", "work")
     const updated = await loadStore(path)
-    expect(updated.activeTemplate).toBe("work")
+    expect(updated.activeTemplates?.["/project-a"]).toBe("work")
+    expect(updated.activeTemplate).toBeUndefined()
 
-    await setActiveTemplate(path, undefined)
+    await setActiveTemplate(path, "/project-a", undefined)
     const cleared = await loadStore(path)
-    expect(cleared.activeTemplate).toBeUndefined()
+    expect(cleared.activeTemplates).toBeUndefined()
+  })
+
+  test("keeps per-directory entries independent", async () => {
+    const path = await temporaryStorePath()
+    const store: TemplateStore = {
+      version: 1,
+      defaultTemplate: "default",
+      templates: { default: { mcp: {} }, work: { mcp: {} }, minimal: { mcp: {} } },
+    }
+    await saveStore(path, store)
+
+    await setActiveTemplate(path, "/a", "work")
+    await setActiveTemplate(path, "/b", "minimal")
+    const loaded = await loadStore(path)
+    expect(loaded.activeTemplates).toEqual({ "/a": "work", "/b": "minimal" })
+
+    await setActiveTemplate(path, "/a", undefined)
+    const after = await loadStore(path)
+    expect(after.activeTemplates).toEqual({ "/b": "minimal" })
   })
 
   test("rejects setActiveTemplate for missing template", async () => {
     const path = await temporaryStorePath()
     await saveStore(path, createEmptyStore())
 
-    await expect(setActiveTemplate(path, "nope")).rejects.toThrow("Template not found")
+    await expect(setActiveTemplate(path, "/a", "nope")).rejects.toThrow("Template not found")
   })
 
   test("rejects store with activeTemplate referencing missing template", async () => {
     const path = await temporaryStorePath()
     const broken = { version: 1, defaultTemplate: "default", activeTemplate: "ghost", templates: { default: { mcp: {} } } }
+    await writeFile(path, JSON.stringify(broken))
+
+    await expect(loadStore(path)).rejects.toThrow("Invalid MCP template store")
+  })
+
+  test("rejects store with activeTemplates value referencing missing template", async () => {
+    const path = await temporaryStorePath()
+    const broken = { version: 1, defaultTemplate: "default", activeTemplates: { "/a": "ghost" }, templates: { default: { mcp: {} } } }
     await writeFile(path, JSON.stringify(broken))
 
     await expect(loadStore(path)).rejects.toThrow("Invalid MCP template store")

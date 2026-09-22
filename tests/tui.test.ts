@@ -85,25 +85,26 @@ describe("TUI template actions", () => {
     expect(await loadStore(path)).toEqual(createEmptyStore())
   })
 
-  test("deleteTemplate clears activeTemplate when deleting the active template", async () => {
+  test("deleteTemplate clears all active entries referencing the deleted template", async () => {
     const path = await temporaryStorePath()
     const store: TemplateStore = {
       version: 1,
       defaultTemplate: "default",
-      templates: { default: { mcp: {} }, work: { mcp: {} } },
+      templates: { default: { mcp: {} }, work: { mcp: {} }, minimal: { mcp: {} } },
     }
     await saveStore(path, store)
-    await setActiveTemplate(path, "work")
-    expect((await loadStore(path)).activeTemplate).toBe("work")
+    await setActiveTemplate(path, "/a", "work")
+    await setActiveTemplate(path, "/b", "minimal")
+    expect((await loadStore(path)).activeTemplates).toEqual({ "/a": "work", "/b": "minimal" })
 
     await deleteTemplate(path, "work")
 
     const updated = await loadStore(path)
-    expect(updated.activeTemplate).toBeUndefined()
+    expect(updated.activeTemplates).toEqual({ "/b": "minimal" })
     expect(updated.templates.work).toBeUndefined()
   })
 
-  test("applyNamedTemplate sets activeTemplate and calls instance.dispose", async () => {
+  test("applyNamedTemplate sets per-directory activeTemplate and calls instance.dispose", async () => {
     const path = await temporaryStorePath()
     const store: TemplateStore = {
       version: 1,
@@ -125,13 +126,15 @@ describe("TUI template actions", () => {
           dispose: async () => { disposed.push(true); return { data: true, error: undefined } },
         },
       },
-      state: { config: { mcp: { docs: {} } } },
+      state: { config: { mcp: { docs: {} } }, path: { directory: "/test-project" } },
       ui: { dialog: { replace: () => undefined, clear: () => undefined }, toast: () => undefined },
     }
 
     await applyNamedTemplate(api as never, path, "work")
 
-    expect((await loadStore(path)).activeTemplate).toBe("work")
+    const loaded = await loadStore(path)
+    expect(loaded.activeTemplates?.["/test-project"]).toBe("work")
+    expect(loaded.activeTemplate).toBeUndefined()
     expect(disposed.length).toBe(1)
     expect(connected).toEqual(["docs"])
   })
@@ -157,13 +160,13 @@ describe("TUI template actions", () => {
           dispose: async () => { disposed.push(true); return { data: true, error: undefined } },
         },
       },
-      state: { config: { mcp: { docs: {} } } },
+      state: { config: { mcp: { docs: {} } }, path: { directory: "/test-project" } },
       ui: { dialog: { replace: () => undefined, clear: () => undefined }, toast: () => undefined },
     }
 
     await applyNamedTemplate(api as never, path, "work")
 
-    expect((await loadStore(path)).activeTemplate).toBeUndefined()
+    expect((await loadStore(path)).activeTemplates).toBeUndefined()
     expect(disposed.length).toBe(0)
   })
 })

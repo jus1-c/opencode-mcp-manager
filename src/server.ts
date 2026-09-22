@@ -3,7 +3,7 @@ import { DEFAULT_STORE_PATH, loadStore, saveStore } from "./store.js"
 import { applyTemplateToConfig, reconcileStore } from "./template.js"
 
 export function createServerPlugin(storePath = DEFAULT_STORE_PATH): Plugin {
-  return async () => ({
+  return async (input) => ({
     config: async (config: Config) => {
       const serverNames = Object.keys(config.mcp ?? {})
       const store = await loadStore(storePath)
@@ -13,7 +13,11 @@ export function createServerPlugin(storePath = DEFAULT_STORE_PATH): Plugin {
         await saveStore(storePath, reconciled.store)
       }
 
-      const templateName = reconciled.store.activeTemplate ?? reconciled.store.defaultTemplate
+      const dir = input.directory
+      const templateName =
+        (dir ? reconciled.store.activeTemplates?.[dir] : undefined) ??
+        reconciled.store.activeTemplate ??
+        reconciled.store.defaultTemplate
       const template = reconciled.store.templates[templateName]
       if (!template) throw new Error("Default MCP template is missing")
       applyTemplateToConfig(config, template)

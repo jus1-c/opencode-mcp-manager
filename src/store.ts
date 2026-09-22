@@ -14,7 +14,10 @@ export type Template = {
 export type TemplateStore = {
   version: typeof STORE_VERSION
   defaultTemplate: string
+  /** Legacy single-project active template; migrated to activeTemplates on first write. */
   activeTemplate?: string
+  /** Directory -> template name. Applying a template only affects that project. */
+  activeTemplates?: Record<string, string>
   templates: Record<string, Template>
 }
 
@@ -67,10 +70,26 @@ export function validateStore(value: unknown): TemplateStore {
     }
   }
 
+  const activeTemplatesRaw = value.activeTemplates
+  let activeTemplates: Record<string, string> | undefined
+  if (activeTemplatesRaw !== undefined) {
+    if (!isRecord(activeTemplatesRaw)) {
+      throw invalidStore()
+    }
+    activeTemplates = {}
+    for (const [dir, tplName] of Object.entries(activeTemplatesRaw)) {
+      if (!dir || typeof tplName !== "string" || !isRecord(value.templates[tplName])) {
+        throw invalidStore()
+      }
+      activeTemplates[dir] = tplName
+    }
+  }
+
   return {
     version: STORE_VERSION,
     defaultTemplate: value.defaultTemplate,
     ...(activeTemplate !== undefined ? { activeTemplate } : {}),
+    ...(activeTemplates !== undefined ? { activeTemplates } : {}),
     templates,
   }
 }
@@ -106,13 +125,26 @@ export async function saveStore(path: string, store: unknown): Promise<void> {
   }
 }
 
-export async function setActiveTemplate(storePath: string, name: string | undefined): Promise<TemplateStore> {
+export async function setActiveTemplate(
+  storePath: string,
+  directory: string,
+  name: string | undefined,
+): Promise<TemplateStore> {
   const store = await loadStore(storePath)
   if (name !== undefined && !store.templates[name]) {
     throw new Error(`Template not found: ${name}`)
   }
-  const { activeTemplate: _previous, ...rest } = store
-  const nextStore: TemplateStore = name !== undefined ? { ...rest, activeTemplate: name } : rest
+  const activeTemplates = { ...(store.activeTemplates ?? {}) }
+  if (name !== undefined) {
+    activeTemplates[directory] = name
+  } else {
+    delete activeTemplates[directory]
+  }
+  const { activeTemplate: _legacy, activeTemplates: _old, ...rest } = store
+  const nextStore: TemplateStore = {
+    ...rest,
+    ...(Object.keys(activeTemplates).length > 0 ? { activeTemplates } : {}),
+  }
   await saveStore(storePath, nextStore)
   return nextStore
 }

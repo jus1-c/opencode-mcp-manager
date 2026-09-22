@@ -64,13 +64,14 @@ export async function deleteTemplate(storePath: string, name: string): Promise<T
   if (!store.templates[name]) throw new Error(`Template not found: ${name}`)
 
   const { [name]: _deleted, ...templates } = store.templates
+  const { activeTemplate: _legacy, activeTemplates: _old, ...rest } = store
+  const activeTemplates = _old
+    ? Object.fromEntries(Object.entries(_old).filter(([, tpl]) => tpl !== name))
+    : undefined
   const nextStore: TemplateStore = {
-    version: store.version,
-    defaultTemplate: store.defaultTemplate,
+    ...rest,
     templates,
-    ...(store.activeTemplate !== name && store.activeTemplate !== undefined
-      ? { activeTemplate: store.activeTemplate }
-      : {}),
+    ...(activeTemplates && Object.keys(activeTemplates).length > 0 ? { activeTemplates } : {}),
   }
   await saveStore(storePath, nextStore)
   return nextStore
@@ -115,19 +116,16 @@ async function prepareStore(api: TuiPluginApi, storePath: string): Promise<Templ
 
 function showMainMenu(api: TuiPluginApi, storePath: string, store: TemplateStore): void {
   type MainOption =
-    | { kind: "apply"; name: string }
+    | { kind: "apply" }
     | { kind: "save" }
     | { kind: "default" }
     | { kind: "delete" }
 
   const options: TuiDialogSelectOption<MainOption>[] = [
-    ...Object.keys(store.templates).map((name) => ({
-      title: `Apply ${name}${name === store.defaultTemplate ? " (default)" : ""}`,
-      value: { kind: "apply", name } as const,
-    })),
-    { title: "Save current state", value: { kind: "save" } },
-    { title: "Set default template", value: { kind: "default" } },
-    { title: "Delete template", value: { kind: "delete" } },
+    { title: "Apply template", value: { kind: "apply" } as const },
+    { title: "Save current state", value: { kind: "save" } as const },
+    { title: "Set default template", value: { kind: "default" } as const },
+    { title: "Delete template", value: { kind: "delete" } as const },
   ]
 
   api.ui.dialog.replace(() =>
@@ -137,8 +135,7 @@ function showMainMenu(api: TuiPluginApi, storePath: string, store: TemplateStore
       options,
       onSelect: (option) => {
         if (option.value.kind === "apply") {
-          api.ui.dialog.clear()
-          void applyNamedTemplate(api, storePath, option.value.name)
+          showApplyMenu(api, storePath, store)
         } else if (option.value.kind === "save") {
           showSavePrompt(api, storePath)
         } else if (option.value.kind === "default") {
@@ -146,6 +143,23 @@ function showMainMenu(api: TuiPluginApi, storePath: string, store: TemplateStore
         } else {
           showDeleteMenu(api, storePath, store)
         }
+      },
+    }),
+  )
+}
+
+function showApplyMenu(api: TuiPluginApi, storePath: string, store: TemplateStore): void {
+  api.ui.dialog.replace(() =>
+    api.ui.DialogSelect({
+      title: "Apply template",
+      placeholder: "Choose a template",
+      options: Object.keys(store.templates).map((name) => ({
+        title: name + (name === store.defaultTemplate ? " (default)" : ""),
+        value: name,
+      })),
+      onSelect: (option) => {
+        api.ui.dialog.clear()
+        void applyNamedTemplate(api, storePath, option.value)
       },
     }),
   )
@@ -226,7 +240,7 @@ export async function applyNamedTemplate(api: TuiPluginApi, storePath: string, n
       return
     }
 
-    await setActiveTemplate(storePath, name)
+    await setActiveTemplate(storePath, api.state.path.directory, name)
     const disposed = await api.client.instance.dispose()
     if (disposed.error) {
       api.ui.toast({
