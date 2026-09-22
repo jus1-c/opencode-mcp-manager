@@ -100,6 +100,30 @@ describe("MCP template behavior", () => {
     expect(results).toEqual([])
   })
 
+  test("treats SDK error responses as failed operations", async () => {
+    const client = {
+      mcp: {
+        connect: async ({ name }: { name: string }) => ({
+          data: undefined,
+          error: { code: "ConnectionRefused", path: `/mcp/${name}/connect` },
+        }),
+        disconnect: async () => {
+          throw new Error("disconnect failed")
+        },
+      },
+    }
+
+    const results = await applyTemplateToRuntime(client, {
+      docs: { status: "disabled" },
+      browser: { status: "connected" },
+    }, { mcp: { docs: true, browser: false } })
+
+    expect(results).toEqual([
+      { name: "docs", desiredEnabled: true, operation: "connect", ok: false, error: JSON.stringify({ code: "ConnectionRefused", path: "/mcp/docs/connect" }) },
+      { name: "browser", desiredEnabled: false, operation: "disconnect", ok: false, error: "disconnect failed" },
+    ])
+  })
+
   test("creates default store with no configured servers", () => {
     expect(reconcileStore(createEmptyStore(), []).store).toEqual(createEmptyStore())
   })

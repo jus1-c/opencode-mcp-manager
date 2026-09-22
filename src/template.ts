@@ -82,10 +82,11 @@ export async function applyTemplateToRuntime(
 
   const results = await Promise.allSettled(
     actions.map(async (action) => {
-      if (action.operation === "connect") {
-        await client.mcp.connect({ name: action.name })
-      } else {
-        await client.mcp.disconnect({ name: action.name })
+      const response = action.operation === "connect"
+        ? await client.mcp.connect({ name: action.name })
+        : await client.mcp.disconnect({ name: action.name })
+      if (isErrorResponse(response)) {
+        throw new Error(JSON.stringify(response.error))
       }
       return action
     }),
@@ -99,6 +100,10 @@ export async function applyTemplateToRuntime(
     }
     return { ...action, ok: false, error: errorMessage(result.reason) }
   })
+}
+
+function isErrorResponse(value: unknown): value is { error: unknown } {
+  return typeof value === "object" && value !== null && "error" in value && value.error !== undefined && value.error !== null
 }
 
 function errorMessage(error: unknown): string {

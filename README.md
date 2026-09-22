@@ -45,6 +45,10 @@ New configured MCP servers enter every template as enabled. Removed configured s
 
 Dynamic MCP servers added at runtime are not saved because templates do not contain connection configuration.
 
+## Known limitation
+
+The built-in `/mcps` dialog and the sidebar read OpenCode's TUI sync snapshot, which only refreshes at startup or after a built-in `/mcps` toggle. Applying a template here changes the real server state immediately (verify with `opencode mcp list`), but those views can stay stale until restart. The `/mcp-man` menu always fetches live status directly.
+
 ## Development
 
 ```bash
