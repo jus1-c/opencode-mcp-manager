@@ -4,12 +4,20 @@ Local OpenCode plugin for saving and applying MCP server templates from the nati
 
 ## Install
 
-Build and install from this directory:
+Install directly from GitHub:
 
 ```bash
+opencode plugin "jus1-c/opencode-mcp-manager"
+```
+
+Or build from source:
+
+```bash
+git clone https://github.com/jus1-c/opencode-mcp-manager.git
+cd opencode-mcp-manager
 bun install
 bun run build
-opencode plugin "/mnt/d/Documents/Opencode/opencode-mcp-manager"
+opencode plugin .
 ```
 
 Restart OpenCode after installation. Run `/mcp-man` to open the manager.
@@ -21,6 +29,8 @@ Restart OpenCode after installation. Run `/mcp-man` to open the manager.
 - Save current static MCP state under a named template.
 - Change or delete non-default templates.
 - Keep MCP connection configuration in OpenCode config; templates store only enabled state.
+- Persist the last-applied template as `activeTemplate`; the config hook prefers it over `defaultTemplate` so the recreated instance restores the applied state.
+- Trigger `instance.dispose()` after a successful apply so the TUI sync snapshot refreshes and the sidebar / `/mcps` reflect the new state immediately.
 
 ## Store
 
@@ -30,24 +40,37 @@ The plugin creates `mcp-templates.json` beside the installed plugin package:
 {
   "version": 1,
   "defaultTemplate": "default",
+  "activeTemplate": "work",
   "templates": {
     "default": {
       "mcp": {
         "context7": true,
         "browser": false
       }
+    },
+    "work": {
+      "mcp": {
+        "context7": false,
+        "browser": true
+      }
     }
   }
 }
 ```
 
-New configured MCP servers enter every template as enabled. Removed configured servers are pruned. Invalid store files fail closed and remain unchanged.
+`activeTemplate` is optional. It is set when a template is applied and cleared when the active template is deleted. New configured MCP servers enter every template as enabled. Removed configured servers are pruned. Invalid store files fail closed and remain unchanged.
 
 Dynamic MCP servers added at runtime are not saved because templates do not contain connection configuration.
 
-## Known limitation
+## Updates
 
-The built-in `/mcps` dialog and the sidebar read OpenCode's TUI sync snapshot, which only refreshes at startup or after a built-in `/mcps` toggle. Applying a template here changes the real server state immediately (verify with `opencode mcp list`), but those views can stay stale until restart. The `/mcp-man` menu always fetches live status directly.
+Managed by `opencode-component-updater`. The adapter script checks the GitHub repository for new commits:
+
+```bash
+opencode-component-updater check
+```
+
+Set `OPENCODE_MCP_MANAGER_GITHUB` (default `jus1-c/opencode-mcp-manager`) or `OPENCODE_MCP_MANAGER_SOURCE` (local clone path) to override the source.
 
 ## Development
 
