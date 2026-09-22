@@ -8,8 +8,9 @@ plugins/opencode-component-updater/README.md:
   update       -> build payload inside OPENCODE_UPDATER_STAGE only
   healthcheck  -> validate staged payload before apply
 
-Authoritative source is the local development Git repository. Version
-identity is the 40-character source commit; there is no remote release.
+Source is GitHub. Set OPENCODE_MCP_MANAGER_GITHUB (e.g. jus1-c/opencode-mcp-manager)
+and optionally OPENCODE_MCP_MANAGER_GITHUB_BRANCH (default main).
+Falls back to a local git clone via OPENCODE_MCP_MANAGER_SOURCE.
 """
 
 import json
@@ -18,8 +19,14 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
+GITHUB_REPO = os.environ.get(
+    "OPENCODE_MCP_MANAGER_GITHUB",
+    "jus1-c/opencode-mcp-manager" if not os.environ.get("OPENCODE_MCP_MANAGER_SOURCE") else None,
+)
+GITHUB_BRANCH = os.environ.get("OPENCODE_MCP_MANAGER_GITHUB_BRANCH", "main")
 SOURCE = Path(os.environ.get(
     "OPENCODE_MCP_MANAGER_SOURCE",
     "/mnt/d/Documents/Opencode/opencode-mcp-manager",
@@ -44,10 +51,26 @@ def run(*command, cwd=None):
 
 
 def source_head():
+    if GITHUB_REPO:
+        sha = run("gh", "api", f"repos/{GITHUB_REPO}/commits/{GITHUB_BRANCH}", "--jq", ".sha")
+        if len(sha) != 40:
+            raise SystemExit("failed to resolve GitHub HEAD commit")
+        return sha
     commit = run("git", "-C", SOURCE, "rev-parse", "HEAD")
     if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
         raise SystemExit("source repository HEAD is not a resolved commit")
     return commit
+
+
+def _checkout_commit(commit):
+    """Shallow-fetch exact commit from GitHub into a temp directory."""
+    tmpdir = Path(tempfile.mkdtemp(prefix="mcp-manager-"))
+    run("git", "init", cwd=tmpdir)
+    run("git", "remote", "add", "origin",
+        f"https://github.com/{GITHUB_REPO}.git", cwd=tmpdir)
+    run("git", "fetch", "--depth", "1", "origin", commit, cwd=tmpdir)
+    run("git", "checkout", "FETCH_HEAD", cwd=tmpdir)
+    return tmpdir
 
 
 def provenance(root=TARGET):
@@ -111,30 +134,42 @@ def check():
 def update():
     stage = Path(os.environ["OPENCODE_UPDATER_STAGE"])
     commit = os.environ["OPENCODE_UPDATER_SOURCE_COMMIT"]
-    if source_head() != commit:
-        raise SystemExit("source repository HEAD does not match update plan")
 
-    for relative in BUILD_INPUTS:
-        copy_safe_tree(SOURCE / relative, stage / relative)
-    copy_safe_tree(Path(__file__), stage / "component-updater")
+    if GITHUB_REPO:
+        source_dir = _checkout_commit(commit)
+        own_source_dir = True
+    else:
+        if source_head() != commit:
+            raise SystemExit("source repository HEAD does not match update plan")
+        source_dir = SOURCE
+        own_source_dir = False
 
-    run("bun", "install", "--frozen-lockfile", cwd=stage)
-    run("bun", "run", "build", cwd=stage)
-    if not entrypoints_present(stage):
-        raise SystemExit("staged build is missing plugin entrypoints")
+    try:
+        for relative in BUILD_INPUTS:
+            copy_safe_tree(source_dir / relative, stage / relative)
+        copy_safe_tree(source_dir / "component-updater", stage / "component-updater")
 
-    metadata = {
-        "schemaVersion": 1,
-        "commit": commit,
-        "source": str(SOURCE),
-    }
-    (stage / PROVENANCE).write_text(json.dumps(metadata, indent=2) + "\n")
-    manifest = {
-        "schemaVersion": 2,
-        "planSha256": os.environ["OPENCODE_UPDATER_PLAN_SHA256"],
-        "paths": MANAGED_PATHS,
-    }
-    Path(os.environ["OPENCODE_UPDATER_MANIFEST"]).write_text(json.dumps(manifest) + "\n")
+        run("bun", "install", "--frozen-lockfile", cwd=stage)
+        run("bun", "run", "build", cwd=stage)
+        if not entrypoints_present(stage):
+            raise SystemExit("staged build is missing plugin entrypoints")
+
+        source_label = f"github:{GITHUB_REPO}" if GITHUB_REPO else str(SOURCE)
+        metadata = {
+            "schemaVersion": 1,
+            "commit": commit,
+            "source": source_label,
+        }
+        (stage / PROVENANCE).write_text(json.dumps(metadata, indent=2) + "\n")
+        manifest = {
+            "schemaVersion": 2,
+            "planSha256": os.environ["OPENCODE_UPDATER_PLAN_SHA256"],
+            "paths": MANAGED_PATHS,
+        }
+        Path(os.environ["OPENCODE_UPDATER_MANIFEST"]).write_text(json.dumps(manifest) + "\n")
+    finally:
+        if own_source_dir:
+            shutil.rmtree(source_dir, ignore_errors=True)
 
 
 def healthcheck():
