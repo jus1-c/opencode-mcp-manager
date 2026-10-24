@@ -4,7 +4,6 @@ import {
   applyTemplateToRuntime,
   isRuntimeEnabled,
   reconcileStore,
-  type ConfigWithMcp,
   type RuntimeStatusMap,
 } from "../src/template.js"
 import { createEmptyStore } from "../src/store.js"
@@ -27,27 +26,29 @@ describe("MCP template behavior", () => {
     expect(result.store.templates.work?.mcp).toEqual({ new: true, kept: true })
   })
 
-  test("applies template enabled flags without losing MCP configuration", () => {
-    const config: ConfigWithMcp = {
-      mcp: {
-        docs: { type: "remote", url: "https://docs.test", timeout: 10 },
-        browser: { type: "local", command: ["browser"], enabled: true },
-      },
+  test("applies template flags to the inverse v2 disabled field", () => {
+    const configs = {
+      docs: { disabled: false },
+      browser: { disabled: false },
     }
 
-    applyTemplateToConfig(config, { mcp: { docs: false, browser: true } })
+    applyTemplateToConfig(configs, { mcp: { docs: false, browser: true } })
 
-    expect(config.mcp).toEqual({
-      docs: { type: "remote", url: "https://docs.test", timeout: 10, enabled: false },
-      browser: { type: "local", command: ["browser"], enabled: true },
-    })
+    expect(configs.docs.disabled).toBe(true)
+    expect(configs.browser.disabled).toBe(false)
+  })
+
+  test("skips servers missing from config", () => {
+    const configs: Record<string, { disabled?: boolean }> = {}
+    applyTemplateToConfig(configs, { mcp: { ghost: true } })
+    expect(configs).toEqual({})
   })
 
   test("treats every non-disabled status as enabled", () => {
     expect(isRuntimeEnabled({ status: "connected" })).toBe(true)
+    expect(isRuntimeEnabled({ status: "pending" })).toBe(true)
     expect(isRuntimeEnabled({ status: "failed", error: "offline" })).toBe(true)
-    expect(isRuntimeEnabled({ status: "needs_auth" })).toBe(true)
-    expect(isRuntimeEnabled({ status: "needs_client_registration", error: "register" })).toBe(true)
+    expect(isRuntimeEnabled({ status: "needs_auth", error: "auth" })).toBe(true)
     expect(isRuntimeEnabled({ status: "disabled" })).toBe(false)
   })
 
@@ -59,12 +60,12 @@ describe("MCP template behavior", () => {
     }
     const client = {
       mcp: {
-        connect: async ({ name }: { name: string }) => {
-          calls.push(`connect:${name}`)
+        connect: async ({ server }: { server: string }) => {
+          calls.push(`connect:${server}`)
         },
-        disconnect: async ({ name }: { name: string }) => {
-          calls.push(`disconnect:${name}`)
-          if (name === "browser") throw new Error("disconnect failed")
+        disconnect: async ({ server }: { server: string }) => {
+          calls.push(`disconnect:${server}`)
+          if (server === "browser") throw new Error("disconnect failed")
         },
       },
     }
@@ -78,6 +79,27 @@ describe("MCP template behavior", () => {
       { name: "docs", desiredEnabled: true, operation: "connect", ok: true },
       { name: "browser", desiredEnabled: false, operation: "disconnect", ok: false, error: "disconnect failed" },
     ])
+  })
+
+  test("passes the location directory to the client", async () => {
+    const inputs: unknown[] = []
+    const client = {
+      mcp: {
+        connect: async (input: unknown) => {
+          inputs.push(input)
+        },
+        disconnect: async () => undefined,
+      },
+    }
+
+    await applyTemplateToRuntime(
+      client,
+      { docs: { status: "disabled" } },
+      { mcp: { docs: true } },
+      "/project-a",
+    )
+
+    expect(inputs).toEqual([{ server: "docs", location: { directory: "/project-a" } }])
   })
 
   test("skips runtime calls when statuses already match template", async () => {
@@ -98,30 +120,6 @@ describe("MCP template behavior", () => {
     }, { mcp: { docs: true, browser: false } })
 
     expect(results).toEqual([])
-  })
-
-  test("treats SDK error responses as failed operations", async () => {
-    const client = {
-      mcp: {
-        connect: async ({ name }: { name: string }) => ({
-          data: undefined,
-          error: { code: "ConnectionRefused", path: `/mcp/${name}/connect` },
-        }),
-        disconnect: async () => {
-          throw new Error("disconnect failed")
-        },
-      },
-    }
-
-    const results = await applyTemplateToRuntime(client, {
-      docs: { status: "disabled" },
-      browser: { status: "connected" },
-    }, { mcp: { docs: true, browser: false } })
-
-    expect(results).toEqual([
-      { name: "docs", desiredEnabled: true, operation: "connect", ok: false, error: JSON.stringify({ code: "ConnectionRefused", path: "/mcp/docs/connect" }) },
-      { name: "browser", desiredEnabled: false, operation: "disconnect", ok: false, error: "disconnect failed" },
-    ])
   })
 
   test("creates default store with no configured servers", () => {

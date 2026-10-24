@@ -1,7 +1,7 @@
 import type { Template, TemplateStore } from "./store.js"
 
-export type ConfigWithMcp = {
-  mcp?: Record<string, object | undefined>
+export type McpConfigLike = {
+  disabled?: boolean
 }
 
 export type RuntimeStatus = {
@@ -13,8 +13,8 @@ export type RuntimeStatusMap = Record<string, RuntimeStatus>
 
 export type RuntimeClient = {
   mcp: {
-    connect(input: { name: string }): Promise<unknown>
-    disconnect(input: { name: string }): Promise<unknown>
+    connect(input: { server: string; location?: { directory: string } }): Promise<unknown>
+    disconnect(input: { server: string; location?: { directory: string } }): Promise<unknown>
   }
 }
 
@@ -53,13 +53,12 @@ export function reconcileStore(
   }
 }
 
-export function applyTemplateToConfig(config: ConfigWithMcp, template: Template): void {
-  if (!config.mcp) return
-
+/** v2 config uses the inverse `disabled` flag. */
+export function applyTemplateToConfig(configs: Record<string, McpConfigLike>, template: Template): void {
   for (const [name, enabled] of Object.entries(template.mcp)) {
-    const current = config.mcp[name]
+    const current = configs[name]
     if (!current) continue
-    config.mcp[name] = { ...current, enabled }
+    current.disabled = !enabled
   }
 }
 
@@ -71,6 +70,7 @@ export async function applyTemplateToRuntime(
   client: RuntimeClient,
   statuses: RuntimeStatusMap,
   template: Template,
+  directory?: string,
 ): Promise<RuntimeApplyResult[]> {
   const actions: RuntimeAction[] = Object.entries(template.mcp).flatMap(([name, desiredEnabled]) => {
     const currentEnabled = isRuntimeEnabled(statuses[name])
@@ -82,12 +82,10 @@ export async function applyTemplateToRuntime(
 
   const results = await Promise.allSettled(
     actions.map(async (action) => {
-      const response = action.operation === "connect"
-        ? await client.mcp.connect({ name: action.name })
-        : await client.mcp.disconnect({ name: action.name })
-      if (isErrorResponse(response)) {
-        throw new Error(JSON.stringify(response.error))
-      }
+      const input = directory ? { server: action.name, location: { directory } } : { server: action.name }
+      await (action.operation === "connect"
+        ? client.mcp.connect(input)
+        : client.mcp.disconnect(input))
       return action
     }),
   )
@@ -100,10 +98,6 @@ export async function applyTemplateToRuntime(
     }
     return { ...action, ok: false, error: errorMessage(result.reason) }
   })
-}
-
-function isErrorResponse(value: unknown): value is { error: unknown } {
-  return typeof value === "object" && value !== null && "error" in value && value.error !== undefined && value.error !== null
 }
 
 function errorMessage(error: unknown): string {

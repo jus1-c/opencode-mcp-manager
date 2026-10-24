@@ -1,23 +1,58 @@
-import type {
-  TuiDialogSelectOption,
-  TuiPlugin,
-  TuiPluginApi,
-  TuiPluginModule,
-} from "@opencode-ai/plugin/tui"
-import {
-  DEFAULT_STORE_PATH,
-  loadStore,
-  saveStore,
-  setActiveTemplate,
-  type Template,
-  type TemplateStore,
-} from "./store.js"
-import {
-  applyTemplateToRuntime,
-  isRuntimeEnabled,
-  reconcileStore,
-  type RuntimeStatusMap,
-} from "./template.js"
+import { Plugin } from "@opencode/plugin/tui"
+import { McpManagerRpc } from "./rpc.js"
+import type { Template, TemplateStore } from "./store.js"
+import { isRuntimeEnabled, type RuntimeStatusMap } from "./template.js"
+
+type TuiContext = {
+  location: { directory: string } | undefined
+  client: { rpc(definition: unknown): McpClient }
+  data: {
+    location: {
+      default(): { directory: string }
+      mcp: { server: { list(location?: { directory: string }): McpServer[] | undefined } }
+    }
+  }
+  keymap: {
+    layer(factory: () => { mode?: string; commands: Command[] }): void
+  }
+  ui: {
+    dialog: {
+      select<Value>(options: SelectOptions<Value>): Promise<Value | undefined>
+      prompt(options: { title: string; placeholder?: string }): Promise<string | undefined>
+      confirm(options: { title: string; message: string; label?: { confirm?: string; cancel?: string } }): Promise<boolean | undefined>
+      alert(options: { title: string; message: string }): Promise<void>
+    }
+    toast: { show(options: { title?: string; message: string; variant?: string }): void }
+  }
+}
+
+type McpServer = { name: string; status: { status: string; error?: string } }
+
+type McpClient = {
+  list(input?: unknown): Promise<TemplateStore>
+  apply(input: { name: string; directory: string }): Promise<{ store: TemplateStore }>
+  save(input: { name: string; template: Template }): Promise<{ store: TemplateStore }>
+  setDefault(input: { name: string }): Promise<{ store: TemplateStore }>
+  remove(input: { name: string }): Promise<{ store: TemplateStore }>
+  clearActive(input: { directory: string }): Promise<{ store: TemplateStore }>
+}
+
+type Command = {
+  id: string
+  title: string
+  description?: string
+  group?: string
+  palette?: true
+  slash?: { name: string; aliases?: string[] }
+  run: () => void | Promise<void>
+}
+
+type SelectOptions<Value> = {
+  title: string
+  placeholder?: string
+  options: { title: string; value: Value; description?: string; category?: string }[]
+  current?: Value
+}
 
 export function runtimeTemplateFromStatuses(
   serverNames: readonly string[],
@@ -28,273 +63,125 @@ export function runtimeTemplateFromStatuses(
   }
 }
 
-export async function saveCurrentTemplate(
-  storePath: string,
-  name: string,
-  serverNames: readonly string[],
-  statuses: RuntimeStatusMap,
-): Promise<TemplateStore> {
-  const templateName = name.trim()
-  if (!templateName) throw new Error("Template name is required")
-
-  const store = await loadStore(storePath)
-  const nextStore: TemplateStore = {
-    ...store,
-    templates: {
-      ...store.templates,
-      [templateName]: runtimeTemplateFromStatuses(serverNames, statuses),
-    },
-  }
-  await saveStore(storePath, nextStore)
-  return nextStore
+function currentDirectory(ctx: TuiContext): string {
+  return ctx.location?.directory ?? ctx.data.location.default().directory
 }
 
-export async function setDefaultTemplate(storePath: string, name: string): Promise<TemplateStore> {
-  const store = await loadStore(storePath)
-  if (!store.templates[name]) throw new Error(`Template not found: ${name}`)
-
-  const nextStore = { ...store, defaultTemplate: name }
-  await saveStore(storePath, nextStore)
-  return nextStore
+function serverStatuses(ctx: TuiContext): { names: string[]; statuses: RuntimeStatusMap } {
+  const directory = currentDirectory(ctx)
+  const servers = ctx.data.location.mcp.server.list({ directory }) ?? []
+  const statuses: RuntimeStatusMap = {}
+  for (const server of servers) statuses[server.name] = server.status
+  return { names: servers.map((server) => server.name), statuses }
 }
 
-export async function deleteTemplate(storePath: string, name: string): Promise<TemplateStore> {
-  const store = await loadStore(storePath)
-  if (name === store.defaultTemplate) throw new Error("Cannot delete default template")
-  if (!store.templates[name]) throw new Error(`Template not found: ${name}`)
+export function createTuiPlugin() {
+  return Plugin.define({
+    id: "opencode-mcp-manager.tui",
+    setup(ctx) {
+      const context = ctx as unknown as TuiContext
+      const rpc = context.client.rpc(McpManagerRpc)
 
-  const { [name]: _deleted, ...templates } = store.templates
-  const { activeTemplate: _legacy, activeTemplates: _old, ...rest } = store
-  const activeTemplates = _old
-    ? Object.fromEntries(Object.entries(_old).filter(([, tpl]) => tpl !== name))
-    : undefined
-  const nextStore: TemplateStore = {
-    ...rest,
-    templates,
-    ...(activeTemplates && Object.keys(activeTemplates).length > 0 ? { activeTemplates } : {}),
-  }
-  await saveStore(storePath, nextStore)
-  return nextStore
-}
-
-export function createTuiPlugin(storePath = DEFAULT_STORE_PATH): TuiPlugin {
-  return async (api) => {
-    api.keymap.registerLayer({
-      commands: [
-        {
-          name: "mcp-manager.open",
-          title: "MCP Manager",
-          description: "Manage MCP server templates",
-          category: "Plugin",
-          namespace: "palette",
-          slashName: "mcp-man",
-          run: () => {
-            void openManager(api, storePath)
+      context.keymap.layer(() => ({
+        mode: "global",
+        commands: [
+          {
+            id: "mcp-manager.open",
+            title: "MCP Manager",
+            description: "Manage MCP server templates",
+            group: "Plugin",
+            palette: true,
+            slash: { name: "mcp-man" },
+            run: () => openManager(context, rpc),
           },
-        },
-      ],
-    })
-  }
+        ],
+      }))
+    },
+  })
 }
 
-async function openManager(api: TuiPluginApi, storePath: string): Promise<void> {
+async function openManager(ctx: TuiContext, rpc: McpClient): Promise<void> {
   try {
-    const store = await prepareStore(api, storePath)
-    showMainMenu(api, storePath, store)
-  } catch (error) {
-    showError(api, error)
-  }
-}
-
-async function prepareStore(api: TuiPluginApi, storePath: string): Promise<TemplateStore> {
-  const store = await loadStore(storePath)
-  const serverNames = configuredServerNames(api)
-  const reconciled = reconcileStore(store, serverNames)
-  if (reconciled.changed) await saveStore(storePath, reconciled.store)
-  return reconciled.store
-}
-
-function showMainMenu(api: TuiPluginApi, storePath: string, store: TemplateStore): void {
-  type MainOption =
-    | { kind: "apply" }
-    | { kind: "save" }
-    | { kind: "default" }
-    | { kind: "delete" }
-
-  const options: TuiDialogSelectOption<MainOption>[] = [
-    { title: "Apply template", value: { kind: "apply" } as const },
-    { title: "Save current state", value: { kind: "save" } as const },
-    { title: "Set default template", value: { kind: "default" } as const },
-    { title: "Delete template", value: { kind: "delete" } as const },
-  ]
-
-  api.ui.dialog.replace(() =>
-    api.ui.DialogSelect({
+    const store = await rpc.list()
+    const action = await ctx.ui.dialog.select({
       title: "MCP Manager",
       placeholder: "Choose an action",
-      options,
-      onSelect: (option) => {
-        if (option.value.kind === "apply") {
-          showApplyMenu(api, storePath, store)
-        } else if (option.value.kind === "save") {
-          showSavePrompt(api, storePath)
-        } else if (option.value.kind === "default") {
-          showDefaultMenu(api, storePath, store)
-        } else {
-          showDeleteMenu(api, storePath, store)
-        }
-      },
-    }),
-  )
+      options: [
+        { title: "Apply template", value: "apply" },
+        { title: "Save current state", value: "save" },
+        { title: "Set default template", value: "default" },
+        { title: "Delete template", value: "delete" },
+      ],
+    })
+    if (!action) return
+
+    if (action === "apply") await applyTemplate(ctx, rpc, store)
+    else if (action === "save") await saveCurrentState(ctx, rpc)
+    else if (action === "default") await changeDefault(ctx, rpc, store)
+    else await removeTemplate(ctx, rpc, store)
+  } catch (error) {
+    showError(ctx, error)
+  }
 }
 
-function showApplyMenu(api: TuiPluginApi, storePath: string, store: TemplateStore): void {
-  api.ui.dialog.replace(() =>
-    api.ui.DialogSelect({
-      title: "Apply template",
-      placeholder: "Choose a template",
-      options: Object.keys(store.templates).map((name) => ({
-        title: name + (name === store.defaultTemplate ? " (default)" : ""),
-        value: name,
-      })),
-      onSelect: (option) => {
-        api.ui.dialog.clear()
-        void applyNamedTemplate(api, storePath, option.value)
-      },
-    }),
-  )
+async function applyTemplate(ctx: TuiContext, rpc: McpClient, store: TemplateStore): Promise<void> {
+  const name = await ctx.ui.dialog.select({
+    title: "Apply template",
+    placeholder: "Choose a template",
+    options: Object.keys(store.templates).map((template) => ({
+      title: template + (template === store.defaultTemplate ? " (default)" : ""),
+      value: template,
+    })),
+  })
+  if (!name) return
+
+  await rpc.apply({ name, directory: currentDirectory(ctx) })
+  ctx.ui.toast.show({ variant: "success", title: "MCP template applied", message: name })
 }
 
-function showSavePrompt(api: TuiPluginApi, storePath: string): void {
-  api.ui.dialog.replace(() =>
-    api.ui.DialogPrompt({
-      title: "Save current MCP state",
-      placeholder: "work",
-      onConfirm: (name) => {
-        api.ui.dialog.clear()
-        void saveCurrentState(api, storePath, name)
-      },
-    }),
-  )
+async function saveCurrentState(ctx: TuiContext, rpc: McpClient): Promise<void> {
+  const name = await ctx.ui.dialog.prompt({ title: "Save current MCP state", placeholder: "work" })
+  if (!name) return
+
+  const { names, statuses } = serverStatuses(ctx)
+  await rpc.save({ name, template: runtimeTemplateFromStatuses(names, statuses) })
+  ctx.ui.toast.show({ variant: "success", title: "MCP template saved", message: name.trim() })
 }
 
-function showDefaultMenu(api: TuiPluginApi, storePath: string, store: TemplateStore): void {
-  api.ui.dialog.replace(() =>
-    api.ui.DialogSelect({
-      title: "Set default template",
-      current: store.defaultTemplate,
-      options: Object.keys(store.templates).map((name) => ({
-        title: name,
-        value: name,
-      })),
-      onSelect: (option) => {
-        api.ui.dialog.clear()
-        void changeDefault(api, storePath, option.value)
-      },
-    }),
-  )
+async function changeDefault(ctx: TuiContext, rpc: McpClient, store: TemplateStore): Promise<void> {
+  const name = await ctx.ui.dialog.select({
+    title: "Set default template",
+    current: store.defaultTemplate,
+    options: Object.keys(store.templates).map((template) => ({ title: template, value: template })),
+  })
+  if (!name) return
+
+  await rpc.setDefault({ name })
+  ctx.ui.toast.show({ variant: "success", title: "Default template changed", message: name })
 }
 
-function showDeleteMenu(api: TuiPluginApi, storePath: string, store: TemplateStore): void {
+async function removeTemplate(ctx: TuiContext, rpc: McpClient, store: TemplateStore): Promise<void> {
   const names = Object.keys(store.templates).filter((name) => name !== store.defaultTemplate)
   if (!names.length) {
-    api.ui.dialog.clear()
-    api.ui.toast({ variant: "info", title: "MCP Manager", message: "No non-default templates to delete" })
+    ctx.ui.toast.show({ variant: "info", title: "MCP Manager", message: "No non-default templates to delete" })
     return
   }
 
-  api.ui.dialog.replace(() =>
-    api.ui.DialogSelect({
-      title: "Delete template",
-      options: names.map((name) => ({ title: name, value: name })),
-      onSelect: (option) => {
-        api.ui.dialog.replace(() =>
-          api.ui.DialogConfirm({
-            title: "Delete template",
-            message: `Delete ${option.value}?`,
-            onConfirm: () => {
-              api.ui.dialog.clear()
-              void removeTemplate(api, storePath, option.value)
-            },
-          }),
-        )
-      },
-    }),
-  )
+  const name = await ctx.ui.dialog.select({
+    title: "Delete template",
+    options: names.map((template) => ({ title: template, value: template })),
+  })
+  if (!name) return
+
+  const confirmed = await ctx.ui.dialog.confirm({ title: "Delete template", message: `Delete ${name}?` })
+  if (!confirmed) return
+
+  await rpc.remove({ name })
+  ctx.ui.toast.show({ variant: "success", title: "MCP template deleted", message: name })
 }
 
-export async function applyNamedTemplate(api: TuiPluginApi, storePath: string, name: string): Promise<void> {
-  try {
-    const store = await loadStore(storePath)
-    const template = store.templates[name]
-    if (!template) throw new Error(`Template not found: ${name}`)
-
-    const results = await applyTemplateToRuntime(api.client, await fetchStatuses(api), template)
-    const failures = results.filter((result) => !result.ok)
-    if (failures.length) {
-      api.ui.toast({
-        variant: "error",
-        title: "MCP template partially applied",
-        message: failures.map((failure) => `${failure.name}: ${failure.error}`).join("; "),
-      })
-      return
-    }
-
-    await setActiveTemplate(storePath, api.state.path.directory, name)
-    const disposed = await api.client.instance.dispose()
-    if (disposed.error) {
-      api.ui.toast({
-        variant: "warning",
-        title: "MCP template applied",
-        message: `${name} — restart TUI to refresh`,
-      })
-      return
-    }
-    api.ui.toast({ variant: "success", title: "MCP template applied", message: name })
-  } catch (error) {
-    showError(api, error)
-  }
-}
-
-async function saveCurrentState(api: TuiPluginApi, storePath: string, name: string): Promise<void> {
-  try {
-    await saveCurrentTemplate(storePath, name, configuredServerNames(api), await fetchStatuses(api))
-    api.ui.toast({ variant: "success", title: "MCP template saved", message: name.trim() })
-  } catch (error) {
-    showError(api, error)
-  }
-}
-
-async function changeDefault(api: TuiPluginApi, storePath: string, name: string): Promise<void> {
-  try {
-    await setDefaultTemplate(storePath, name)
-    api.ui.toast({ variant: "success", title: "Default template changed", message: name })
-  } catch (error) {
-    showError(api, error)
-  }
-}
-
-async function removeTemplate(api: TuiPluginApi, storePath: string, name: string): Promise<void> {
-  try {
-    await deleteTemplate(storePath, name)
-    api.ui.toast({ variant: "success", title: "MCP template deleted", message: name })
-  } catch (error) {
-    showError(api, error)
-  }
-}
-
-async function fetchStatuses(api: TuiPluginApi): Promise<RuntimeStatusMap> {
-  const response = await api.client.mcp.status()
-  if (response.error) throw new Error(errorMessage(response.error))
-  return (response.data ?? {}) as RuntimeStatusMap
-}
-
-function configuredServerNames(api: TuiPluginApi): string[] {
-  return Object.keys(api.state.config.mcp ?? {})
-}
-
-function showError(api: TuiPluginApi, error: unknown): void {
-  api.ui.toast({ variant: "error", title: "MCP Manager", message: errorMessage(error) })
+function showError(ctx: TuiContext, error: unknown): void {
+  ctx.ui.toast.show({ variant: "error", title: "MCP Manager", message: errorMessage(error) })
 }
 
 function errorMessage(error: unknown): string {
@@ -303,9 +190,4 @@ function errorMessage(error: unknown): string {
   return String(error)
 }
 
-const plugin: TuiPluginModule = {
-  id: "opencode-mcp-manager",
-  tui: createTuiPlugin(),
-}
-
-export default plugin
+export default createTuiPlugin()
