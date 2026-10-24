@@ -1,11 +1,6 @@
-import { randomUUID } from "node:crypto"
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
-import { fileURLToPath } from "node:url"
-import { dirname as pathDirname } from "node:path"
-
 export const STORE_VERSION = 1 as const
 export const DEFAULT_TEMPLATE_NAME = "default"
-export const DEFAULT_STORE_PATH = fileURLToPath(new URL("../mcp-templates.json", import.meta.url))
+export const STORAGE_KEY = "templates"
 
 export type Template = {
   mcp: Record<string, boolean>
@@ -14,8 +9,6 @@ export type Template = {
 export type TemplateStore = {
   version: typeof STORE_VERSION
   defaultTemplate: string
-  /** Legacy single-project active template; migrated to activeTemplates on first write. */
-  activeTemplate?: string
   /** Directory -> template name. Applying a template only affects that project. */
   activeTemplates?: Record<string, string>
   templates: Record<string, Template>
@@ -63,13 +56,6 @@ export function validateStore(value: unknown): TemplateStore {
     templates[name] = { mcp }
   }
 
-  const activeTemplate = value.activeTemplate
-  if (activeTemplate !== undefined) {
-    if (typeof activeTemplate !== "string" || !activeTemplate || !isRecord(value.templates[activeTemplate])) {
-      throw invalidStore()
-    }
-  }
-
   const activeTemplatesRaw = value.activeTemplates
   let activeTemplates: Record<string, string> | undefined
   if (activeTemplatesRaw !== undefined) {
@@ -88,49 +74,27 @@ export function validateStore(value: unknown): TemplateStore {
   return {
     version: STORE_VERSION,
     defaultTemplate: value.defaultTemplate,
-    ...(activeTemplate !== undefined ? { activeTemplate } : {}),
     ...(activeTemplates !== undefined ? { activeTemplates } : {}),
     templates,
   }
 }
 
-export async function loadStore(path: string): Promise<TemplateStore> {
-  let contents: string
-  try {
-    contents = await readFile(path, "utf8")
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") return createEmptyStore()
-    throw error
-  }
-
-  try {
-    return validateStore(JSON.parse(contents) as unknown)
-  } catch (error) {
-    if (error instanceof TemplateStoreError) throw error
-    throw invalidStore(error)
-  }
+/** Parse an unknown storage value, falling back to an empty store. */
+export function parseStore(value: unknown): TemplateStore {
+  if (value === undefined || value === null) return createEmptyStore()
+  return validateStore(value)
 }
 
-export async function saveStore(path: string, store: unknown): Promise<void> {
-  const validStore = validateStore(store)
-  const directory = pathDirname(path)
-  await mkdir(directory, { recursive: true })
-
-  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`
-  try {
-    await writeFile(temporaryPath, `${JSON.stringify(validStore, null, 2)}\n`, "utf8")
-    await rename(temporaryPath, path)
-  } finally {
-    await rm(temporaryPath, { force: true })
-  }
+export function activeTemplateName(store: TemplateStore, directory: string | undefined): string {
+  const active = directory ? store.activeTemplates?.[directory] : undefined
+  return active && store.templates[active] ? active : store.defaultTemplate
 }
 
-export async function setActiveTemplate(
-  storePath: string,
+export function setActiveTemplateIn(
+  store: TemplateStore,
   directory: string,
   name: string | undefined,
-): Promise<TemplateStore> {
-  const store = await loadStore(storePath)
+): TemplateStore {
   if (name !== undefined && !store.templates[name]) {
     throw new Error(`Template not found: ${name}`)
   }
@@ -140,13 +104,25 @@ export async function setActiveTemplate(
   } else {
     delete activeTemplates[directory]
   }
-  const { activeTemplate: _legacy, activeTemplates: _old, ...rest } = store
-  const nextStore: TemplateStore = {
-    ...rest,
-    ...(Object.keys(activeTemplates).length > 0 ? { activeTemplates } : {}),
-  }
-  await saveStore(storePath, nextStore)
-  return nextStore
+  return {
+    ...store,
+    ...(Object.keys(activeTemplates).length > 0 ? { activeTemplates } : { activeTemplates: undefined }),
+  } as TemplateStore
+}
+
+export function removeTemplateFrom(store: TemplateStore, name: string): TemplateStore {
+  if (name === store.defaultTemplate) throw new Error("Cannot delete default template")
+  if (!store.templates[name]) throw new Error(`Template not found: ${name}`)
+
+  const { [name]: _deleted, ...templates } = store.templates
+  const filtered = store.activeTemplates
+    ? Object.fromEntries(Object.entries(store.activeTemplates).filter(([, tpl]) => tpl !== name))
+    : undefined
+  return {
+    ...store,
+    templates,
+    ...(filtered && Object.keys(filtered).length > 0 ? { activeTemplates: filtered } : { activeTemplates: undefined }),
+  } as TemplateStore
 }
 
 function invalidStore(cause?: unknown): TemplateStoreError {
@@ -155,8 +131,4 @@ function invalidStore(cause?: unknown): TemplateStoreError {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error
 }

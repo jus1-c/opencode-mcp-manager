@@ -1,6 +1,11 @@
 # OpenCode MCP Manager
 
-Local OpenCode plugin for saving and applying MCP server templates from the native TUI.
+OpenCode **V2** plugin for saving and applying MCP server templates from the native TUI.
+
+## Requirements
+
+- OpenCode V2 (`@opencode/cli` >= 2.1.4)
+- This plugin does **not** support OpenCode V1 (`@opencode-ai/plugin`). Use the `v1` tag for the V1 build.
 
 ## Install
 
@@ -15,58 +20,82 @@ Or build from source:
 ```bash
 git clone https://github.com/jus1-c/opencode-mcp-manager.git
 cd opencode-mcp-manager
+git checkout main
 bun install
 bun run build
-opencode plugin .
 ```
 
-Restart OpenCode after installation. Run `/mcp-man` to open the manager.
+Then register the plugin in `opencode.json`:
+
+```jsonc
+{
+  "plugins": ["opencode-mcp-manager"]
+}
+```
+
+and the TUI part in `cli.json` (V2 terminal client configuration):
+
+```jsonc
+{
+  "plugins": ["opencode-mcp-manager"]
+}
+```
+
+Restart OpenCode. Run `/mcp-man` to open the manager.
 
 ## Features
 
-- Apply saved MCP templates at startup through the server plugin config hook, scoped per project directory.
+- Apply saved MCP templates at startup through `ctx.mcp.transform`, scoped per project location.
 - Connect and disconnect MCP servers at runtime from the native TUI.
-- Save current static MCP state under a named template.
+- Save current MCP state under a named template.
 - Change or delete non-default templates.
-- Keep MCP connection configuration in OpenCode config; templates store only enabled state.
-- Persist the last-applied template per project; the config hook prefers that over `defaultTemplate` so the recreated instance restores the applied state without affecting other projects.
-- Trigger `instance.dispose()` after a successful apply so the TUI sync snapshot refreshes and the sidebar / `/mcps` reflect the new state immediately.
+- Store only enabled state; connection configuration stays in OpenCode config.
+- Persist the last-applied template per directory in plugin storage.
+- No `instance.dispose()` workaround: OpenCode V2 emits `mcp.status.changed`, so the TUI list refreshes on its own.
 
-## Store
+## Menu
 
-The plugin creates `mcp-templates.json` beside the installed plugin package:
+```
+MCP Manager
+  Apply template        → submenu listing templates
+  Save current state
+  Set default template
+  Delete template
+```
+
+Applying a template only affects the current project location. Other projects keep following the default template.
+
+## Storage
+
+Templates are stored in plugin storage (server-side, namespace `plugin:<id>:`) under the `templates` key:
 
 ```json
 {
   "version": 1,
   "defaultTemplate": "default",
   "activeTemplates": {
-    "/home/user/project-a": "work",
-    "/home/user/project-b": "minimal"
+    "/home/user/project-a": "work"
   },
   "templates": {
     "default": { "mcp": { "context7": true, "browser": false } },
-    "work":    { "mcp": { "context7": false, "browser": true } },
-    "minimal": { "mcp": { "context7": false, "browser": false } }
+    "work": { "mcp": { "context7": false, "browser": true } }
   }
 }
 ```
 
-`activeTemplates` maps each project directory to its chosen template. Applying a template only affects that project; other projects keep following `defaultTemplate`. Legacy `activeTemplate` (a single global string) is still read for migration but new writes always use the per-directory map.
+The TUI reaches the server through the `opencode-mcp-manager` RPC (`src/rpc.ts`), because V2 keeps TUI storage and server storage in separate namespaces.
 
-New configured MCP servers enter every template as enabled. Removed configured servers are pruned. Invalid store files fail closed and remain unchanged.
+New configured MCP servers enter every template as enabled. Removed servers are pruned. Invalid stored data fails closed to an empty store.
 
-Dynamic MCP servers added at runtime are not saved because templates do not contain connection configuration.
+## Architecture
 
-## Updates
-
-Managed by `opencode-component-updater`. The adapter script checks the GitHub repository for new commits:
-
-```bash
-opencode-component-updater check
-```
-
-Set `OPENCODE_MCP_MANAGER_GITHUB` (default `jus1-c/opencode-mcp-manager`) or `OPENCODE_MCP_MANAGER_SOURCE` (local clone path) to override the source.
+| Piece | File | API |
+| --- | --- | --- |
+| Server plugin | `src/server.ts` | `@opencode/plugin` — `ctx.mcp.transform`, `ctx.rpc.register`, `ctx.storage` |
+| TUI plugin | `src/tui.ts` | `@opencode/plugin/tui` — `ctx.keymap.layer`, `ctx.ui.dialog.*` |
+| RPC contract | `src/rpc.ts` | `@opencode/plugin/rpc` |
+| Store logic | `src/store.ts` | pure functions, no filesystem |
+| Template rules | `src/template.ts` | reconcile + apply (v2 `disabled` inverse) |
 
 ## Development
 
