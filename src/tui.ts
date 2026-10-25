@@ -102,7 +102,7 @@ export function createTuiPlugin() {
 
 async function openManager(ctx: TuiContext, rpc: McpClient): Promise<void> {
   try {
-    const store = await rpc.list()
+    const store = await rpc.list({})
     const action = await ctx.ui.dialog.select({
       title: "MCP Manager",
       placeholder: "Choose an action",
