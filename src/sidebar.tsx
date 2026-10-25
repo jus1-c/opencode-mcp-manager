@@ -8,10 +8,15 @@ export type SidebarState = {
   applying?: string
 }
 
+/** The word after the label: what the line is reporting about. */
+export function templateLineSuffix(state: SidebarState | undefined): string {
+  if (!state) return "…"
+  if (state.applying) return `applying ${state.applying} …`
+  return `${state.template}${state.custom ? " (custom)" : ""}`
+}
+
 export function describeTemplateLine(state: SidebarState | undefined): string {
-  if (!state) return "MCP  …"
-  if (state.applying) return `MCP  applying ${state.applying} …`
-  return `MCP  ${state.template}${state.custom ? " (custom)" : ""}`
+  return `MCP  ${templateLineSuffix(state)}`
 }
 
 type ServerStatus = { name: string; status: { status: string } }
@@ -55,6 +60,24 @@ export type SidebarHandle = {
   isApplying(): boolean
 }
 
+export type SidebarTheme = {
+  text: {
+    base: string
+    muted: string
+    feedback: { success: { base: string }; warning: { base: string } }
+  }
+}
+
+/**
+ * Green marks a template that is applied as saved; yellow marks one that drifted
+ * (a session pin, or the runtime disagreeing with the template).
+ */
+export function suffixColor(theme: SidebarTheme, state: SidebarState | undefined): string {
+  if (!state) return theme.text.muted
+  if (state.applying) return theme.text.feedback.warning.base
+  return state.custom ? theme.text.feedback.warning.base : theme.text.feedback.success.base
+}
+
 export function registerSidebar(context: TuiContext, rpc: McpClient): SidebarHandle {
   const [state, setState] = createSignal<SidebarState | undefined>(undefined)
   let applying: string | undefined
@@ -81,7 +104,12 @@ export function registerSidebar(context: TuiContext, rpc: McpClient): SidebarHan
         directory = context.location?.directory ?? context.data.location.default().directory
         void refresh()
       })
-      return <text fg={context.theme.text.base}>{describeTemplateLine(state())}</text>
+      return (
+        <text fg={context.theme.text.base}>
+          MCP{"  "}
+          <span style={{ fg: suffixColor(context.theme, state()) }}>{templateLineSuffix(state())}</span>
+        </text>
+      )
     },
   })
 

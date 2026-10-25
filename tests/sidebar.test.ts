@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { activeTemplateFor, describeTemplateLine, isCustomized } from "../src/sidebar.js"
+import { activeTemplateFor, describeTemplateLine, isCustomized, suffixColor } from "../src/sidebar.js"
 import type { TemplateStore } from "../src/store.js"
 
 function store(overrides?: Partial<TemplateStore>): TemplateStore {
@@ -31,6 +31,20 @@ describe("sidebar template line", () => {
 
   test("renders a placeholder before the first read", () => {
     expect(describeTemplateLine(undefined)).toBe("MCP  …")
+  })
+
+  test("colours a saved template green and a drifted one yellow", () => {
+    const theme = {
+      text: {
+        base: "#ffffff",
+        muted: "#808080",
+        feedback: { success: { base: "#00ff00" }, warning: { base: "#ffaa00" } },
+      },
+    }
+    expect(suffixColor(theme, { template: "work", custom: false })).toBe("#00ff00")
+    expect(suffixColor(theme, { template: "work", custom: true })).toBe("#ffaa00")
+    expect(suffixColor(theme, { template: "work", custom: false, applying: "work" })).toBe("#ffaa00")
+    expect(suffixColor(theme, undefined)).toBe("#808080")
   })
 
   test("picks the active template for a directory, else the default", () => {

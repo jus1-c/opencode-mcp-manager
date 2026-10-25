@@ -56,7 +56,13 @@ function createFakeContext(store: TemplateStore) {
 
   const ctx = {
     location: { directory: "/project-a" },
-    theme: { text: { base: "#ffffff", muted: "#808080" } },
+    theme: {
+      text: {
+        base: "#ffffff",
+        muted: "#808080",
+        feedback: { success: { base: "#00ff00" }, warning: { base: "#ffaa00" } },
+      },
+    },
     client: { rpc: () => rpc },
     data: {
       on(type: string, handler: (event: { data: Record<string, string> }) => void) {
