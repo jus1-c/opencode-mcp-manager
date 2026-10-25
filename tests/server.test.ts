@@ -13,6 +13,7 @@ function createFakeContext(initialStore?: TemplateStore) {
     ["browser", { disabled: false }],
   ])
   const rpcHandlers = new Map<string, (input: unknown) => Promise<unknown>>()
+  const sessionHooks: ((event: unknown) => void)[] = []
   let reloads = 0
 
   const ctx = {
@@ -43,12 +44,19 @@ function createFakeContext(initialStore?: TemplateStore) {
         for (const [name, handler] of Object.entries(handlers)) rpcHandlers.set(name, handler)
       },
     },
+    session: {
+      hook: async (_name: string, callback: (event: unknown) => void) => {
+        sessionHooks.push(callback)
+        return {}
+      },
+    },
   }
 
   return {
     ctx,
     storage,
     configs,
+    sessionHooks,
     rpc: (name: string) => {
       const handler = rpcHandlers.get(name)
       if (!handler) throw new Error(`RPC handler not registered: ${name}`)
@@ -168,5 +176,49 @@ describe("server plugin", () => {
     const fake = await setup()
     const store = (await fake.rpc("list")({})) as TemplateStore
     expect(store.templates.default?.mcp).toEqual({ docs: true, browser: true })
+  })
+
+  test("session override hides MCP tools from that session only", async () => {
+    const fake = await setup({
+      version: 1,
+      defaultTemplate: "default",
+      templates: { default: { mcp: { docs: true, browser: true } } },
+    })
+
+    await fake.rpc("setSessionOverride")({ sessionID: "ses_a", overrides: { docs: false } })
+
+    const hook = fake.sessionHooks[0]!
+    const toolsA = { docs_search: {}, browser_open: {}, read: {} }
+    hook({ sessionID: "ses_a", tools: toolsA })
+    expect(Object.keys(toolsA).sort()).toEqual(["browser_open", "read"])
+
+    const toolsB = { docs_search: {}, browser_open: {}, read: {} }
+    hook({ sessionID: "ses_b", tools: toolsB })
+    expect(Object.keys(toolsB).sort()).toEqual(["browser_open", "docs_search", "read"])
+  })
+
+  test("session override does not reload MCP connections", async () => {
+    const fake = await setup()
+    const before = fake.reloads()
+
+    await fake.rpc("setSessionOverride")({ sessionID: "ses_a", overrides: { docs: false } })
+
+    expect(fake.reloads()).toBe(before)
+  })
+
+  test("getSessionOverride and clearSessionOverride round trip", async () => {
+    const fake = await setup()
+    await fake.rpc("setSessionOverride")({ sessionID: "ses_a", overrides: { docs: false, browser: true } })
+
+    const read = (await fake.rpc("getSessionOverride")({ sessionID: "ses_a" })) as {
+      overrides: Record<string, boolean>
+    }
+    expect(read.overrides).toEqual({ docs: false, browser: true })
+
+    await fake.rpc("clearSessionOverride")({ sessionID: "ses_a" })
+    const cleared = (await fake.rpc("getSessionOverride")({ sessionID: "ses_a" })) as {
+      overrides: Record<string, boolean>
+    }
+    expect(cleared.overrides).toEqual({})
   })
 })

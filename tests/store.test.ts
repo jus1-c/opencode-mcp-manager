@@ -4,7 +4,10 @@ import {
   createEmptyStore,
   parseStore,
   removeTemplateFrom,
+  resolveServerEnabled,
+  sessionOverrideNames,
   setActiveTemplateIn,
+  setSessionOverrideIn,
   validateStore,
   type TemplateStore,
 } from "../src/store.js"
@@ -69,5 +72,34 @@ describe("template store", () => {
     expect(removed.activeTemplates).toBeUndefined()
 
     expect(() => removeTemplateFrom(sampleStore(), "default")).toThrow("Cannot delete default template")
+  })
+
+  test("resolveServerEnabled follows override then template then default", () => {
+    const base = sampleStore()
+    const withActive = setActiveTemplateIn(base, "/a", "work")
+
+    // no override, active template wins
+    expect(resolveServerEnabled(withActive, "docs", "/a", undefined)).toBe(false)
+    expect(resolveServerEnabled(withActive, "docs", "/b", undefined)).toBe(true)
+
+    // session override wins over template
+    const withOverride = setSessionOverrideIn(withActive, "ses_1", { docs: true })
+    expect(resolveServerEnabled(withOverride, "docs", "/a", "ses_1")).toBe(true)
+    expect(resolveServerEnabled(withOverride, "docs", "/a", "ses_2")).toBe(false)
+  })
+
+  test("setSessionOverrideIn removes empty overrides", () => {
+    const store = setSessionOverrideIn(sampleStore(), "ses_1", { docs: false })
+    expect(store.sessionOverrides).toEqual({ ses_1: { docs: false } })
+    expect(sessionOverrideNames(store, "ses_1")).toEqual(["docs"])
+
+    const cleared = setSessionOverrideIn(store, "ses_1", {})
+    expect(cleared.sessionOverrides).toBeUndefined()
+  })
+
+  test("validates sessionOverrides shape", () => {
+    expect(() =>
+      validateStore({ ...sampleStore(), sessionOverrides: { ses_1: { docs: "yes" } } }),
+    ).toThrow("Invalid MCP template store")
   })
 })

@@ -15,6 +15,10 @@ const storeSchema = {
     version: { type: "number" },
     defaultTemplate: { type: "string" },
     activeTemplates: { type: "object", additionalProperties: { type: "string" } },
+    sessionOverrides: {
+      type: "object",
+      additionalProperties: { type: "object", additionalProperties: { type: "boolean" } },
+    },
     templates: { type: "object", additionalProperties: templateSchema },
   },
   required: ["version", "defaultTemplate", "templates"],
@@ -100,6 +104,41 @@ export const McpManagerRpc = Rpc.define({
     },
     clearActive: {
       input: directorySchema,
+      output: { type: "object", properties: { store: storeSchema }, required: ["store"], additionalProperties: false },
+    },
+    getSessionOverride: {
+      input: {
+        type: "object",
+        properties: { sessionID: { type: "string" } },
+        required: ["sessionID"],
+        additionalProperties: false,
+      },
+      output: {
+        type: "object",
+        properties: { overrides: { type: "object", additionalProperties: { type: "boolean" } } },
+        required: ["overrides"],
+        additionalProperties: false,
+      },
+    },
+    setSessionOverride: {
+      input: {
+        type: "object",
+        properties: {
+          sessionID: { type: "string" },
+          overrides: { type: "object", additionalProperties: { type: "boolean" } },
+        },
+        required: ["sessionID", "overrides"],
+        additionalProperties: false,
+      },
+      output: { type: "object", properties: { store: storeSchema }, required: ["store"], additionalProperties: false },
+    },
+    clearSessionOverride: {
+      input: {
+        type: "object",
+        properties: { sessionID: { type: "string" } },
+        required: ["sessionID"],
+        additionalProperties: false,
+      },
       output: { type: "object", properties: { store: storeSchema }, required: ["store"], additionalProperties: false },
     },
   },

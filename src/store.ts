@@ -11,6 +11,12 @@ export type TemplateStore = {
   defaultTemplate: string
   /** Directory -> template name. Applying a template only affects that project. */
   activeTemplates?: Record<string, string>
+  /**
+   * Session -> per-server override. Wins over the directory template.
+   * Only affects which MCP tools the model sees in that session; MCP
+   * connections themselves stay location-scoped.
+   */
+  sessionOverrides?: Record<string, Record<string, boolean>>
   templates: Record<string, Template>
 }
 
@@ -71,10 +77,33 @@ export function validateStore(value: unknown): TemplateStore {
     }
   }
 
+  const sessionOverridesRaw = value.sessionOverrides
+  let sessionOverrides: Record<string, Record<string, boolean>> | undefined
+  if (sessionOverridesRaw !== undefined) {
+    if (!isRecord(sessionOverridesRaw)) {
+      throw invalidStore()
+    }
+    sessionOverrides = {}
+    for (const [sessionID, rawOverride] of Object.entries(sessionOverridesRaw)) {
+      if (!sessionID || !isRecord(rawOverride)) {
+        throw invalidStore()
+      }
+      const override: Record<string, boolean> = {}
+      for (const [serverName, enabled] of Object.entries(rawOverride)) {
+        if (!serverName || typeof enabled !== "boolean") {
+          throw invalidStore()
+        }
+        override[serverName] = enabled
+      }
+      sessionOverrides[sessionID] = override
+    }
+  }
+
   return {
     version: STORE_VERSION,
     defaultTemplate: value.defaultTemplate,
     ...(activeTemplates !== undefined ? { activeTemplates } : {}),
+    ...(sessionOverrides !== undefined ? { sessionOverrides } : {}),
     templates,
   }
 }
@@ -88,6 +117,46 @@ export function parseStore(value: unknown): TemplateStore {
 export function activeTemplateName(store: TemplateStore, directory: string | undefined): string {
   const active = directory ? store.activeTemplates?.[directory] : undefined
   return active && store.templates[active] ? active : store.defaultTemplate
+}
+
+/**
+ * Resolve the enabled state for one MCP server.
+ * Priority: session override -> active directory template -> default template.
+ */
+export function resolveServerEnabled(
+  store: TemplateStore,
+  serverName: string,
+  directory: string | undefined,
+  sessionID: string | undefined,
+): boolean {
+  const override = sessionID ? store.sessionOverrides?.[sessionID]?.[serverName] : undefined
+  if (override !== undefined) return override
+
+  const template = store.templates[activeTemplateName(store, directory)]
+  return template?.mcp[serverName] ?? true
+}
+
+/** Server names the session's override touches, for UI display. */
+export function sessionOverrideNames(store: TemplateStore, sessionID: string): string[] {
+  return Object.keys(store.sessionOverrides?.[sessionID] ?? {}).sort()
+}
+
+export function setSessionOverrideIn(
+  store: TemplateStore,
+  sessionID: string,
+  overrides: Record<string, boolean> | undefined,
+): TemplateStore {
+  if (!sessionID) throw new Error("Session ID is required")
+  const sessionOverrides = { ...(store.sessionOverrides ?? {}) }
+  if (overrides && Object.keys(overrides).length > 0) {
+    sessionOverrides[sessionID] = { ...overrides }
+  } else {
+    delete sessionOverrides[sessionID]
+  }
+  return {
+    ...store,
+    ...(Object.keys(sessionOverrides).length > 0 ? { sessionOverrides } : { sessionOverrides: undefined }),
+  } as TemplateStore
 }
 
 export function setActiveTemplateIn(

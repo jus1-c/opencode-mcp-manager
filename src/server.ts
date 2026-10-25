@@ -5,7 +5,9 @@ import {
   activeTemplateName,
   parseStore,
   removeTemplateFrom,
+  resolveServerEnabled,
   setActiveTemplateIn,
+  setSessionOverrideIn,
   type Template,
   type TemplateStore,
 } from "./store.js"
@@ -19,6 +21,15 @@ type ServerContext = {
   }
   location: { directory: string }
   rpc: { register(definition: unknown, handlers: unknown): Promise<unknown> }
+  session: {
+    hook(name: "context", callback: (event: SessionContextEvent) => void): Promise<unknown>
+  }
+}
+
+type SessionContextEvent = {
+  readonly sessionID: string
+  readonly agent: unknown
+  tools: Record<string, { description: string; input: unknown }>
 }
 
 type McpEditor = {
@@ -35,6 +46,15 @@ async function writeStore(ctx: ServerContext, store: TemplateStore): Promise<Tem
   await ctx.storage.set(STORAGE_KEY, store)
   await ctx.mcp.reload()
   return store
+}
+
+/** MCP tools are registered as `<server>_<tool>`; the namespace is the sanitized server name. */
+function toolServerNamespace(toolName: string, servers: readonly string[]): string | undefined {
+  const match = servers
+    .map((server) => ({ server, namespace: server.replace(/[^a-zA-Z0-9_-]/g, "_") }))
+    .filter((entry) => toolName.startsWith(`${entry.namespace}_`))
+    .sort((a, b) => b.namespace.length - a.namespace.length)[0]
+  return match?.server
 }
 
 export function createServerPlugin() {
@@ -59,6 +79,21 @@ export function createServerPlugin() {
           editor.update(name, (draft) => {
             draft.disabled = !desired
           })
+        }
+      })
+
+      // Per-session MCP tool filtering. Connections stay location-scoped, so an
+      // override can only hide a server's tools from this session's model.
+      await serverCtx.session.hook("context", (event) => {
+        const store = snapshot
+        const servers = Object.keys(store.templates[activeTemplateName(store, serverCtx.location.directory)]?.mcp ?? {})
+        if (!servers.length) return
+        for (const toolName of Object.keys(event.tools)) {
+          const server = toolServerNamespace(toolName, servers)
+          if (!server) continue
+          if (!resolveServerEnabled(store, server, serverCtx.location.directory, event.sessionID)) {
+            delete event.tools[toolName]
+          }
         }
       })
 
@@ -98,6 +133,24 @@ export function createServerPlugin() {
         clearActive: async (input: { directory: string }) => {
           const current = await readStore(serverCtx)
           snapshot = await writeStore(serverCtx, setActiveTemplateIn(current, input.directory, undefined))
+          return { store: snapshot }
+        },
+        getSessionOverride: async (input: { sessionID: string }) => {
+          const current = await readStore(serverCtx)
+          snapshot = current
+          return { overrides: current.sessionOverrides?.[input.sessionID] ?? {} }
+        },
+        setSessionOverride: async (input: { sessionID: string; overrides: Record<string, boolean> }) => {
+          const current = await readStore(serverCtx)
+          // No mcp.reload(): an override only changes which tools the session sees.
+          snapshot = setSessionOverrideIn(current, input.sessionID, input.overrides)
+          await serverCtx.storage.set(STORAGE_KEY, snapshot)
+          return { store: snapshot }
+        },
+        clearSessionOverride: async (input: { sessionID: string }) => {
+          const current = await readStore(serverCtx)
+          snapshot = setSessionOverrideIn(current, input.sessionID, undefined)
+          await serverCtx.storage.set(STORAGE_KEY, snapshot)
           return { store: snapshot }
         },
       })
