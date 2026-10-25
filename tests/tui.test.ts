@@ -13,6 +13,12 @@ function createFakeContext(store: TemplateStore) {
   const toasts: { title?: string; message: string; variant?: string }[] = []
   const commands: { id: string; slash?: { name: string }; run: () => unknown }[] = []
   const calls: string[] = []
+  const sessionOverrides: Record<string, boolean> = {}
+  const route: { type: string; sessionID?: string } = { type: "session", sessionID: "ses_current" }
+  const serverStatusList = [
+    { name: "docs", status: { status: "connected" } },
+    { name: "browser", status: { status: "disabled" } },
+  ]
 
   const rpc = {
     list: async () => store,
@@ -33,20 +39,32 @@ function createFakeContext(store: TemplateStore) {
       return { store }
     },
     clearActive: async () => ({ store }),
+    getSessionOverride: async () => ({ overrides: sessionOverrides }),
+    setSessionOverride: async (input: { sessionID: string; overrides: Record<string, boolean> }) => {
+      Object.assign(sessionOverrides, input.overrides)
+      calls.push(`setSessionOverride:${JSON.stringify(input.overrides)}`)
+      return { store }
+    },
+    clearSessionOverride: async () => ({ store }),
   }
+
+  const eventHandlers = new Map<string, ((event: { data: Record<string, string> }) => void)[]>()
 
   const ctx = {
     location: { directory: "/project-a" },
     client: { rpc: () => rpc },
     data: {
+      on(type: string, handler: (event: { data: Record<string, string> }) => void) {
+        const list = eventHandlers.get(type) ?? []
+        list.push(handler)
+        eventHandlers.set(type, list)
+        return () => undefined
+      },
       location: {
         default: () => ({ directory: "/project-a" }),
         mcp: {
           server: {
-            list: () => [
-              { name: "docs", status: { status: "connected" } },
-              { name: "browser", status: { status: "disabled" } },
-            ],
+            list: () => serverStatusList,
           },
         },
       },
@@ -72,6 +90,9 @@ function createFakeContext(store: TemplateStore) {
           toasts.push(options)
         },
       },
+      router: {
+        current: () => route,
+      },
     },
   }
 
@@ -82,6 +103,12 @@ function createFakeContext(store: TemplateStore) {
     toasts,
     calls,
     commands,
+    serverStatusList,
+    sessionOverrides,
+    route,
+    emit(type: string, data: Record<string, string>) {
+      for (const handler of eventHandlers.get(type) ?? []) handler({ data })
+    },
     run: async (command: (typeof commands)[number]) => command.run(),
   }
 }
@@ -176,5 +203,48 @@ describe("TUI plugin", () => {
     const fake = await setup()
     await fake.run(fake.commands[0]!)
     expect(fake.calls).toEqual([])
+  })
+
+  test("auto-captures a manual toggle that diverges from the template", async () => {
+    const fake = await setup()
+    // docs is enabled by the template but the user just disconnected it
+    fake.serverStatusList[0] = { name: "docs", status: { status: "disabled" } }
+
+    fake.emit("mcp.status.changed", { server: "docs" })
+    await Bun.sleep(0)
+
+    expect(fake.calls).toContain('setSessionOverride:{"docs":false}')
+    expect(fake.toasts.at(-1)).toMatchObject({ title: "MCP pinned to this session" })
+  })
+
+  test("does not pin when the toggle matches the template", async () => {
+    const fake = await setup()
+    // browser is disabled in the template and still disabled: nothing to capture
+    fake.emit("mcp.status.changed", { server: "browser" })
+    await Bun.sleep(0)
+
+    expect(fake.calls.filter((call) => call.startsWith("setSessionOverride"))).toEqual([])
+  })
+
+  test("does not pin outside a session", async () => {
+    const fake = await setup()
+    fake.route.type = "home"
+    fake.serverStatusList[0] = { name: "docs", status: { status: "disabled" } }
+
+    fake.emit("mcp.status.changed", { server: "docs" })
+    await Bun.sleep(0)
+
+    expect(fake.calls.filter((call) => call.startsWith("setSessionOverride"))).toEqual([])
+  })
+
+  test("does not overwrite an existing override", async () => {
+    const fake = await setup()
+    fake.sessionOverrides.docs = true
+    fake.serverStatusList[0] = { name: "docs", status: { status: "disabled" } }
+
+    fake.emit("mcp.status.changed", { server: "docs" })
+    await Bun.sleep(0)
+
+    expect(fake.calls.filter((call) => call.startsWith("setSessionOverride"))).toEqual([])
   })
 })

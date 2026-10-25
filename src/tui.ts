@@ -7,6 +7,7 @@ type TuiContext = {
   location: { directory: string } | undefined
   client: { rpc(definition: unknown): McpClient }
   data: {
+    on<Type extends string>(type: Type, handler: (event: { data: Record<string, string> }) => void): () => void
     location: {
       default(): { directory: string }
       mcp: { server: { list(location?: { directory: string }): McpServer[] | undefined } }
@@ -22,7 +23,7 @@ type TuiContext = {
       confirm(options: { title: string; message: string; label?: { confirm?: string; cancel?: string } }): Promise<boolean | undefined>
       alert(options: { title: string; message: string }): Promise<void>
     }
-    toast: { show(options: { title?: string; message: string; variant?: string }): void }
+    toast: { show(options: { title?: string; message: string; variant?: string; duration?: number }): void }
     router: { current(): { type: string; sessionID?: string } }
   }
 }
@@ -103,8 +104,48 @@ export function createTuiPlugin() {
           },
         ],
       }))
+
+      // Auto-capture manual toggles: /mcps or the sidebar disconnect/connect a
+      // server while a session is open, so pin that server for the session
+      // instead of asking the user to open the override menu afterwards.
+      context.data.on("mcp.status.changed", (event) => {
+        const server = event.data.server
+        if (!server) return
+        void captureManualToggle(context, rpc, server)
+      })
     },
   })
+}
+
+async function captureManualToggle(ctx: TuiContext, rpc: McpClient, server: string): Promise<void> {
+  try {
+    const route = ctx.ui.router.current()
+    if (route.type !== "session" || !route.sessionID) return
+    const sessionID = route.sessionID
+    const directory = currentDirectory(ctx)
+
+    const servers = ctx.data.location.mcp.server.list({ directory }) ?? []
+    const status = servers.find((entry) => entry.name === server)?.status.status
+    if (!status || status === "pending") return
+
+    const { overrides } = await rpc.getSessionOverride({ sessionID })
+    if (server in overrides) return
+
+    const store = await rpc.list({})
+    const templateEnabled = resolveFromStore(store, server, directory)
+    const actualEnabled = status !== "disabled"
+    if (templateEnabled === actualEnabled) return
+
+    await rpc.setSessionOverride({ sessionID, overrides: { ...overrides, [server]: actualEnabled } })
+    ctx.ui.toast.show({
+      variant: "info",
+      title: "MCP pinned to this session",
+      message: `${server}: ${actualEnabled ? "on" : "off"} (override > template)`,
+      duration: 2500,
+    })
+  } catch {
+    // Auto-capture is best-effort; never surface a toast for a background event.
+  }
 }
 
 async function openManager(ctx: TuiContext, rpc: McpClient): Promise<void> {
