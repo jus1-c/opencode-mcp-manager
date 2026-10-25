@@ -42,7 +42,17 @@ async function readStore(ctx: ServerContext): Promise<TemplateStore> {
   return parseStore(await ctx.storage.get(STORAGE_KEY))
 }
 
-async function writeStore(ctx: ServerContext, store: TemplateStore): Promise<TemplateStore> {
+/**
+ * Persist and reload. The in-memory snapshot must be updated before reload,
+ * because reload runs the mcp transform synchronously and that transform reads
+ * the snapshot to decide which servers to disable.
+ */
+async function writeStore(
+  ctx: ServerContext,
+  store: TemplateStore,
+  setSnapshot: (next: TemplateStore) => void,
+): Promise<TemplateStore> {
+  setSnapshot(store)
   await ctx.storage.set(STORAGE_KEY, store)
   await ctx.mcp.reload()
   return store
@@ -105,34 +115,40 @@ export function createServerPlugin() {
         apply: async (input: { name: string; directory: string }) => {
           const current = await readStore(serverCtx)
           if (!current.templates[input.name]) throw new Error(`Template not found: ${input.name}`)
-          snapshot = await writeStore(serverCtx, setActiveTemplateIn(current, input.directory, input.name))
+          snapshot = await writeStore(serverCtx, setActiveTemplateIn(current, input.directory, input.name), (next) => { snapshot = next })
           return { store: snapshot }
         },
         save: async (input: { name: string; template: Template }) => {
           const current = await readStore(serverCtx)
           const name = input.name.trim()
           if (!name) throw new Error("Template name is required")
-          snapshot = await writeStore(serverCtx, {
-            ...current,
-            templates: { ...current.templates, [name]: { mcp: { ...input.template.mcp } } },
-          })
+          snapshot = await writeStore(
+            serverCtx,
+            {
+              ...current,
+              templates: { ...current.templates, [name]: { mcp: { ...input.template.mcp } } },
+            },
+            (next) => {
+              snapshot = next
+            },
+          )
           return { store: snapshot }
         },
         setDefault: async (input: { name: string }) => {
           const current = await readStore(serverCtx)
           if (!current.templates[input.name]) throw new Error(`Template not found: ${input.name}`)
-          snapshot = await writeStore(serverCtx, { ...current, defaultTemplate: input.name })
+          snapshot = await writeStore(serverCtx, { ...current, defaultTemplate: input.name }, (next) => { snapshot = next })
           return { store: snapshot }
         },
         remove: async (input: { name: string }) => {
           const current = await readStore(serverCtx)
           if (!current.templates[input.name]) throw new Error(`Template not found: ${input.name}`)
-          snapshot = await writeStore(serverCtx, removeTemplateFrom(current, input.name))
+          snapshot = await writeStore(serverCtx, removeTemplateFrom(current, input.name), (next) => { snapshot = next })
           return { store: snapshot }
         },
         clearActive: async (input: { directory: string }) => {
           const current = await readStore(serverCtx)
-          snapshot = await writeStore(serverCtx, setActiveTemplateIn(current, input.directory, undefined))
+          snapshot = await writeStore(serverCtx, setActiveTemplateIn(current, input.directory, undefined), (next) => { snapshot = next })
           return { store: snapshot }
         },
         getSessionOverride: async (input: { sessionID: string }) => {

@@ -14,6 +14,7 @@ function createFakeContext(initialStore?: TemplateStore) {
   ])
   const rpcHandlers = new Map<string, (input: unknown) => Promise<unknown>>()
   const sessionHooks: ((event: unknown) => void)[] = []
+  const transforms: ((editor: unknown) => void)[] = []
   let reloads = 0
 
   const ctx = {
@@ -26,6 +27,7 @@ function createFakeContext(initialStore?: TemplateStore) {
     },
     mcp: {
       transform: async (callback: (editor: unknown) => void) => {
+        transforms.push(callback)
         callback({
           list: () => [...configs.entries()],
           get: (name: string) => configs.get(name),
@@ -37,6 +39,17 @@ function createFakeContext(initialStore?: TemplateStore) {
       },
       reload: async () => {
         reloads += 1
+        // Reload re-runs the registered transforms, as the real service does.
+        for (const callback of transforms) {
+          callback({
+            list: () => [...configs.entries()],
+            get: (name: string) => configs.get(name),
+            update: (name: string, update: (config: ServerConfig) => void) => {
+              const config = configs.get(name)
+              if (config) update(config)
+            },
+          })
+        }
       },
     },
     rpc: {
@@ -125,6 +138,25 @@ describe("server plugin", () => {
     expect((fake.storage.get(STORAGE_KEY) as TemplateStore).activeTemplates).toEqual({ "/project-a": "work" })
   })
 
+  test("reload during apply sees the new template, not the stale snapshot", async () => {
+    const fake = await setup({
+      version: 1,
+      defaultTemplate: "default",
+      templates: {
+        default: { mcp: { docs: true, browser: true } },
+        work: { mcp: { docs: false, browser: true } },
+      },
+    })
+    // both enabled under the default template
+    expect(fake.configs.get("docs")?.disabled).toBe(false)
+
+    await fake.rpc("apply")({ name: "work", directory: "/project-a" })
+
+    // the transform ran again on reload and must have seen "work"
+    expect(fake.configs.get("docs")?.disabled).toBe(true)
+    expect(fake.configs.get("browser")?.disabled).toBe(false)
+  })
+
   test("apply RPC rejects unknown templates", async () => {
     const fake = await setup()
     await expect(fake.rpc("apply")({ name: "ghost", directory: "/project-a" })).rejects.toThrow("Template not found")
@@ -135,7 +167,7 @@ describe("server plugin", () => {
     await fake.rpc("save")({ name: "  work  ", template: { mcp: { docs: false } } })
 
     const stored = fake.storage.get(STORAGE_KEY) as TemplateStore
-    expect(stored.templates.work?.mcp).toEqual({ docs: false })
+    expect(stored.templates.work?.mcp).toEqual({ docs: false, browser: true })
   })
 
   test("setDefault and remove RPC update the store", async () => {
