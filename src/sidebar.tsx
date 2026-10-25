@@ -73,7 +73,7 @@ export function registerSidebar(context: TuiContext, rpc: McpClient): SidebarHan
   }
 
   context.ui.slot({
-    append: "sidebar.content",
+    append: "sidebar.footer",
     render: (input) => {
       // The slot input is reactive: a different session re-reads its template.
       createEffect(() => {
@@ -81,7 +81,7 @@ export function registerSidebar(context: TuiContext, rpc: McpClient): SidebarHan
         directory = context.location?.directory ?? context.data.location.default().directory
         void refresh()
       })
-      return <text fg={context.theme.text.muted}>{describeTemplateLine(state())}</text>
+      return <text fg={context.theme.text.base}>{describeTemplateLine(state())}</text>
     },
   })
 

@@ -6,7 +6,7 @@ import { isRuntimeEnabled, type RuntimeStatusMap } from "./template.js"
 
 export type TuiContext = {
   location: { directory: string } | undefined
-  theme: { text: { muted: string } }
+  theme: { text: { base: string; muted: string } }
   client: { rpc(definition: unknown): McpClient }
   data: {
     on<Type extends string>(type: Type, handler: (event: { data: Record<string, string> }) => void): () => void
@@ -28,7 +28,7 @@ export type TuiContext = {
     toast: { show(options: { title?: string; message: string; variant?: string; duration?: number }): void }
     router: { current(): { type: string; sessionID?: string } }
     slot(claim: {
-      append: "sidebar.content"
+      append: "sidebar.footer"
       render: (input: { sessionID: string }) => unknown
     }): () => void
   }
