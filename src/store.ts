@@ -122,6 +122,8 @@ export function activeTemplateName(store: TemplateStore, directory: string | und
 /**
  * Resolve the enabled state for one MCP server.
  * Priority: session override -> active directory template -> default template.
+ * A server no template mentions stays off: a newly configured MCP must be
+ * enabled explicitly through /mcps or /mcp-man.
  */
 export function resolveServerEnabled(
   store: TemplateStore,
@@ -133,7 +135,7 @@ export function resolveServerEnabled(
   if (override !== undefined) return override
 
   const template = store.templates[activeTemplateName(store, directory)]
-  return template?.mcp[serverName] ?? true
+  return template?.mcp[serverName] ?? false
 }
 
 /** Server names the session's override touches, for UI display. */

@@ -9,7 +9,7 @@ import {
 import { createEmptyStore } from "../src/store.js"
 
 describe("MCP template behavior", () => {
-  test("adds new configured servers enabled and prunes removed servers", () => {
+  test("adds new configured servers disabled and prunes removed servers", () => {
     const store = {
       version: 1 as const,
       defaultTemplate: "default",
@@ -22,8 +22,8 @@ describe("MCP template behavior", () => {
     const result = reconcileStore(store, ["kept", "new"])
 
     expect(result.changed).toBe(true)
-    expect(result.store.templates.default?.mcp).toEqual({ kept: false, new: true })
-    expect(result.store.templates.work?.mcp).toEqual({ new: true, kept: true })
+    expect(result.store.templates.default?.mcp).toEqual({ kept: false, new: false })
+    expect(result.store.templates.work?.mcp).toEqual({ kept: false, new: false })
   })
 
   test("applies template flags to the inverse v2 disabled field", () => {

@@ -88,6 +88,13 @@ describe("template store", () => {
     expect(resolveServerEnabled(withOverride, "docs", "/a", "ses_2")).toBe(false)
   })
 
+  test("resolveServerEnabled leaves an unknown server off", () => {
+    expect(resolveServerEnabled(sampleStore(), "ghost", "/a", undefined)).toBe(false)
+    expect(resolveServerEnabled(setSessionOverrideIn(sampleStore(), "ses_1", { docs: false }), "ghost", "/a", "ses_1")).toBe(
+      false,
+    )
+  })
+
   test("setSessionOverrideIn removes empty overrides", () => {
     const store = setSessionOverrideIn(sampleStore(), "ses_1", { docs: false })
     expect(store.sessionOverrides).toEqual({ ses_1: { docs: false } })

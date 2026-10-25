@@ -47,15 +47,35 @@ async function readStore(ctx: ServerContext): Promise<TemplateStore> {
  * because reload runs the mcp transform synchronously and that transform reads
  * the snapshot to decide which servers to disable.
  */
-async function writeStore(
-  ctx: ServerContext,
-  store: TemplateStore,
-  setSnapshot: (next: TemplateStore) => void,
-): Promise<TemplateStore> {
-  setSnapshot(store)
-  await ctx.storage.set(STORAGE_KEY, store)
-  await ctx.mcp.reload()
-  return store
+function createStoreWriter(ctx: ServerContext, initial: TemplateStore) {
+  let snapshot = initial
+  let queue: Promise<unknown> = Promise.resolve()
+
+  /** Serialized so the transform's write cannot land after a newer RPC write. */
+  const persist = (store: TemplateStore): Promise<TemplateStore> => {
+    queue = queue.then(() => ctx.storage.set(STORAGE_KEY, store)).catch(() => ctx.storage.set(STORAGE_KEY, store))
+    return queue.then(() => store)
+  }
+
+  return {
+    get: () => snapshot,
+    set: (store: TemplateStore) => {
+      snapshot = store
+    },
+    /** Persist, reload, and expose the new store. */
+    commit: async (store: TemplateStore): Promise<TemplateStore> => {
+      snapshot = store
+      await persist(store)
+      await ctx.mcp.reload()
+      return snapshot
+    },
+    /** Persist without reloading connections. */
+    quiet: async (store: TemplateStore): Promise<TemplateStore> => {
+      snapshot = store
+      await persist(store)
+      return snapshot
+    },
+  }
 }
 
 /** MCP tools are registered as `<server>_<tool>`; the namespace is the sanitized server name. */
@@ -72,14 +92,19 @@ export function createServerPlugin() {
     id: "opencode-mcp-manager",
     async setup(ctx) {
       const serverCtx = ctx as unknown as ServerContext
-      let snapshot = await readStore(serverCtx)
+      const store = createStoreWriter(serverCtx, await readStore(serverCtx))
+      // The transform sees every configured server, including ones that appear
+      // mid-session. The session hook needs that list but cannot await, so it
+      // reads this snapshot.
+      let configuredServers: string[] = []
 
       await serverCtx.mcp.transform((editor) => {
         const names = editor.list().map(([name]) => name)
-        const reconciled = reconcileStore(snapshot, names)
+        configuredServers = names
+        const reconciled = reconcileStore(store.get(), names)
         if (reconciled.changed) {
-          snapshot = reconciled.store
-          void serverCtx.storage.set(STORAGE_KEY, snapshot)
+          store.set(reconciled.store)
+          void store.quiet(reconciled.store)
         }
         const template = reconciled.store.templates[activeTemplateName(reconciled.store, serverCtx.location.directory)]
         if (!template) return
@@ -94,14 +119,17 @@ export function createServerPlugin() {
 
       // Per-session MCP tool filtering. Connections stay location-scoped, so an
       // override can only hide a server's tools from this session's model.
+      // The server list is the union of template keys and the configured
+      // servers, so a server that appeared mid-session is filtered too.
       await serverCtx.session.hook("context", (event) => {
-        const store = snapshot
-        const servers = Object.keys(store.templates[activeTemplateName(store, serverCtx.location.directory)]?.mcp ?? {})
+        const current = store.get()
+        const template = current.templates[activeTemplateName(current, serverCtx.location.directory)]
+        const servers = [...new Set([...Object.keys(template?.mcp ?? {}), ...configuredServers])]
         if (!servers.length) return
         for (const toolName of Object.keys(event.tools)) {
           const server = toolServerNamespace(toolName, servers)
           if (!server) continue
-          if (!resolveServerEnabled(store, server, serverCtx.location.directory, event.sessionID)) {
+          if (!resolveServerEnabled(current, server, serverCtx.location.directory, event.sessionID)) {
             delete event.tools[toolName]
           }
         }
@@ -109,65 +137,54 @@ export function createServerPlugin() {
 
       await serverCtx.rpc.register(McpManagerRpc, {
         list: async () => {
-          snapshot = await readStore(serverCtx)
-          return snapshot
+          store.set(await readStore(serverCtx))
+          return store.get()
         },
-        apply: async (input: { name: string; directory: string }) => {
+        apply: async (input: { name: string }) => {
           const current = await readStore(serverCtx)
           if (!current.templates[input.name]) throw new Error(`Template not found: ${input.name}`)
-          snapshot = await writeStore(serverCtx, setActiveTemplateIn(current, input.directory, input.name), (next) => { snapshot = next })
-          return { store: snapshot }
+          return { store: await store.commit(setActiveTemplateIn(current, serverCtx.location.directory, input.name)) }
         },
         save: async (input: { name: string; template: Template }) => {
           const current = await readStore(serverCtx)
           const name = input.name.trim()
           if (!name) throw new Error("Template name is required")
-          snapshot = await writeStore(
-            serverCtx,
-            {
-              ...current,
-              templates: { ...current.templates, [name]: { mcp: { ...input.template.mcp } } },
-            },
-            (next) => {
-              snapshot = next
-            },
-          )
-          return { store: snapshot }
+          const next: TemplateStore = {
+            ...current,
+            templates: { ...current.templates, [name]: { mcp: { ...input.template.mcp } } },
+          }
+          // Editing the template that governs this location must take effect now;
+          // saving an unrelated one only persists.
+          const governs = activeTemplateName(current, serverCtx.location.directory) === name
+          return { store: governs ? await store.commit(next) : await store.quiet(next) }
         },
         setDefault: async (input: { name: string }) => {
           const current = await readStore(serverCtx)
           if (!current.templates[input.name]) throw new Error(`Template not found: ${input.name}`)
-          snapshot = await writeStore(serverCtx, { ...current, defaultTemplate: input.name }, (next) => { snapshot = next })
-          return { store: snapshot }
+          return { store: await store.commit({ ...current, defaultTemplate: input.name }) }
         },
         remove: async (input: { name: string }) => {
           const current = await readStore(serverCtx)
           if (!current.templates[input.name]) throw new Error(`Template not found: ${input.name}`)
-          snapshot = await writeStore(serverCtx, removeTemplateFrom(current, input.name), (next) => { snapshot = next })
-          return { store: snapshot }
+          return { store: await store.commit(removeTemplateFrom(current, input.name)) }
         },
-        clearActive: async (input: { directory: string }) => {
+        clearActive: async () => {
           const current = await readStore(serverCtx)
-          snapshot = await writeStore(serverCtx, setActiveTemplateIn(current, input.directory, undefined), (next) => { snapshot = next })
-          return { store: snapshot }
+          return { store: await store.commit(setActiveTemplateIn(current, serverCtx.location.directory, undefined)) }
         },
         getSessionOverride: async (input: { sessionID: string }) => {
           const current = await readStore(serverCtx)
-          snapshot = current
+          store.set(current)
           return { overrides: current.sessionOverrides?.[input.sessionID] ?? {} }
         },
         setSessionOverride: async (input: { sessionID: string; overrides: Record<string, boolean> }) => {
           const current = await readStore(serverCtx)
-          // No mcp.reload(): an override only changes which tools the session sees.
-          snapshot = setSessionOverrideIn(current, input.sessionID, input.overrides)
-          await serverCtx.storage.set(STORAGE_KEY, snapshot)
-          return { store: snapshot }
+          // No reload: an override only changes which tools the session sees.
+          return { store: await store.quiet(setSessionOverrideIn(current, input.sessionID, input.overrides)) }
         },
         clearSessionOverride: async (input: { sessionID: string }) => {
           const current = await readStore(serverCtx)
-          snapshot = setSessionOverrideIn(current, input.sessionID, undefined)
-          await serverCtx.storage.set(STORAGE_KEY, snapshot)
-          return { store: snapshot }
+          return { store: await store.quiet(setSessionOverrideIn(current, input.sessionID, undefined)) }
         },
       })
     },

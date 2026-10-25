@@ -28,6 +28,11 @@ export type RuntimeApplyResult = {
 
 type RuntimeAction = Omit<RuntimeApplyResult, "ok" | "error">
 
+/**
+ * Add servers the store does not know yet. A server that appears mid-session
+ * starts disabled: enabling it is an explicit act, so a config change cannot
+ * silently start a new MCP.
+ */
 export function reconcileStore(
   store: TemplateStore,
   serverNames: readonly string[],
@@ -39,7 +44,7 @@ export function reconcileStore(
   for (const [templateName, template] of Object.entries(store.templates)) {
     const mcp: Record<string, boolean> = {}
     for (const serverName of names) {
-      mcp[serverName] = template.mcp[serverName] ?? true
+      mcp[serverName] = template.mcp[serverName] ?? false
       if (!(serverName in template.mcp)) changed = true
     }
 

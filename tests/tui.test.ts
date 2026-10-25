@@ -13,7 +13,9 @@ function createFakeContext(store: TemplateStore) {
   const toasts: { title?: string; message: string; variant?: string }[] = []
   const commands: { id: string; slash?: { name: string }; run: () => unknown }[] = []
   const calls: string[] = []
+  const savedTemplates: unknown[] = []
   const sessionOverrides: Record<string, boolean> = {}
+  let ignoreApply = false
   const route: { type: string; sessionID?: string } = { type: "session", sessionID: "ses_current" }
   const serverStatusList = [
     { name: "docs", status: { status: "connected" } },
@@ -22,12 +24,14 @@ function createFakeContext(store: TemplateStore) {
 
   const rpc = {
     list: async () => store,
-    apply: async (input: { name: string; directory: string }) => {
-      calls.push(`apply:${input.name}:${input.directory}`)
-      return { store }
+    apply: async (input: { name: string }) => {
+      calls.push(`apply:${input.name}`)
+      if (ignoreApply) return { store }
+      return { store: { ...store, activeTemplates: { ...(store.activeTemplates ?? {}), "/project-a": input.name } } }
     },
     save: async (input: { name: string; template: unknown }) => {
       calls.push(`save:${input.name}`)
+      savedTemplates.push(input.template)
       return { store }
     },
     setDefault: async (input: { name: string }) => {
@@ -52,6 +56,7 @@ function createFakeContext(store: TemplateStore) {
 
   const ctx = {
     location: { directory: "/project-a" },
+    theme: { text: { muted: "#808080" } },
     client: { rpc: () => rpc },
     data: {
       on(type: string, handler: (event: { data: Record<string, string> }) => void) {
@@ -93,6 +98,7 @@ function createFakeContext(store: TemplateStore) {
       router: {
         current: () => route,
       },
+      slot: () => () => undefined,
     },
   }
 
@@ -105,7 +111,14 @@ function createFakeContext(store: TemplateStore) {
     commands,
     serverStatusList,
     sessionOverrides,
+    savedTemplates,
     route,
+    get ignoreApply() {
+      return ignoreApply
+    },
+    set ignoreApply(value: boolean) {
+      ignoreApply = value
+    },
     emit(type: string, data: Record<string, string>) {
       for (const handler of eventHandlers.get(type) ?? []) handler({ data })
     },
@@ -147,14 +160,64 @@ describe("TUI plugin", () => {
     expect(fake.commands[0]).toMatchObject({ id: "mcp-manager.open", slash: { name: "mcp-man" } })
   })
 
-  test("apply flow calls the RPC with the current directory", async () => {
+  test("apply flow calls the RPC and reports the settled state", async () => {
     const fake = await setup()
     fake.selections.push("apply", "work")
 
     await fake.run(fake.commands[0]!)
 
-    expect(fake.calls).toEqual(["apply:work:/project-a"])
-    expect(fake.toasts.at(-1)).toMatchObject({ variant: "success", message: "work" })
+    expect(fake.calls).toEqual(["apply:work"])
+    expect(fake.toasts[0]).toMatchObject({ variant: "info", message: "Applying work…" })
+    expect(fake.toasts.at(-1)).toMatchObject({ variant: "success", message: "work: 1 on, 1 off" })
+  })
+
+  test("apply flow warns while servers are still connecting", async () => {
+    const fake = await setup()
+    fake.selections.push("apply", "work")
+    fake.serverStatusList[0] = { name: "docs", status: { status: "pending" } }
+
+    // Jump past the settle deadline so the poll loop exits on its first sleep.
+    const realNow = Date.now
+    let offset = 0
+    Date.now = () => realNow() + offset
+    const jump = setTimeout(() => {
+      offset = 60_000
+    }, 0)
+    try {
+      await fake.run(fake.commands[0]!)
+    } finally {
+      clearTimeout(jump)
+      Date.now = realNow
+    }
+
+    expect(fake.toasts.at(-1)).toMatchObject({
+      variant: "warning",
+      message: "work: 1 on, 1 off — still connecting: docs",
+    })
+  })
+
+  test("apply flow reports when the server did not record the template", async () => {
+    const fake = await setup()
+    fake.selections.push("apply", "work")
+    fake.ignoreApply = true
+
+    await fake.run(fake.commands[0]!)
+
+    expect(fake.toasts.at(-1)).toMatchObject({
+      variant: "error",
+      message: "Server did not record work for this project",
+    })
+  })
+
+  test("edit flow toggles a server in the template", async () => {
+    const fake = await setup()
+    // pick template "work", toggle "docs", then close
+    fake.selections.push("edit", "work", "docs", undefined)
+
+    await fake.run(fake.commands[0]!)
+
+    expect(fake.calls).toEqual(["save:work"])
+    expect(fake.savedTemplates.at(-1)).toEqual({ mcp: { browser: true, docs: true } })
   })
 
   test("save flow captures the current runtime state", async () => {
@@ -203,6 +266,44 @@ describe("TUI plugin", () => {
     const fake = await setup()
     await fake.run(fake.commands[0]!)
     expect(fake.calls).toEqual([])
+  })
+
+  test("does not pin while a template apply is settling", async () => {
+    const fake = await setup()
+    fake.serverStatusList[0] = { name: "docs", status: { status: "disabled" } }
+    fake.selections.push("apply", "work")
+    // Keep the runtime pending so apply is still in flight when the event lands.
+    fake.serverStatusList[1] = { name: "browser", status: { status: "pending" } }
+
+    const realNow = Date.now
+    let offset = 0
+    Date.now = () => realNow() + offset
+    const jump = setTimeout(() => {
+      offset = 60_000
+    }, 0)
+    try {
+      const running = fake.run(fake.commands[0]!)
+      await Bun.sleep(0)
+      fake.emit("mcp.status.changed", { server: "docs" })
+      await running
+    } finally {
+      clearTimeout(jump)
+      Date.now = realNow
+    }
+
+    expect(fake.calls.filter((call) => call.startsWith("setSessionOverride"))).toEqual([])
+  })
+
+  test("does not pin while any server is still settling", async () => {
+    const fake = await setup()
+    // docs diverges from the template, but the runtime is mid-reload.
+    fake.serverStatusList[0] = { name: "docs", status: { status: "disabled" } }
+    fake.serverStatusList.push({ name: "fresh", status: { status: "pending" } })
+
+    fake.emit("mcp.status.changed", { server: "docs" })
+    await Bun.sleep(0)
+
+    expect(fake.calls.filter((call) => call.startsWith("setSessionOverride"))).toEqual([])
   })
 
   test("auto-captures a manual toggle that diverges from the template", async () => {

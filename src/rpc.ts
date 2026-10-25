@@ -25,13 +25,6 @@ const storeSchema = {
   additionalProperties: false,
 } as const
 
-const directorySchema = {
-  type: "object",
-  properties: { directory: { type: "string" } },
-  required: ["directory"],
-  additionalProperties: false,
-} as const
-
 export const McpManagerRpc = Rpc.define({
   id: "opencode-mcp-manager",
   methods: {
@@ -42,8 +35,8 @@ export const McpManagerRpc = Rpc.define({
     apply: {
       input: {
         type: "object",
-        properties: { name: { type: "string" }, directory: { type: "string" } },
-        required: ["name", "directory"],
+        properties: { name: { type: "string" } },
+        required: ["name"],
         additionalProperties: false,
       },
       output: { type: "object", properties: { store: storeSchema }, required: ["store"], additionalProperties: false },
@@ -103,7 +96,7 @@ export const McpManagerRpc = Rpc.define({
       },
     },
     clearActive: {
-      input: directorySchema,
+      input: { type: "object", additionalProperties: false },
       output: { type: "object", properties: { store: storeSchema }, required: ["store"], additionalProperties: false },
     },
     getSessionOverride: {
